@@ -1,6 +1,6 @@
 """LLM 프로바이더 추상화.
 
-로컬 개발은 MockLLMProvider, 회사 PC에서는 GEMINI_API_KEY 설정 + USE_MOCK=false.
+로컬 개발은 MockLLMProvider, PC에서는 GEMINI_API_KEY 설정 + USE_MOCK=false.
 모델 목록은 config.AVAILABLE_MODELS (gemini-3.5-flash / gemini-3.5-flash-pro).
 """
 import difflib
@@ -100,7 +100,7 @@ class MockLLMProvider:
 
 class GeminiProvider:
     def __init__(self):
-        from google import genai  # 회사 PC에서만 실제 호출 (lazy import)
+        from google import genai  # PC에서만 실제 호출 (lazy import)
 
         self._client = genai.Client(api_key=config.GEMINI_API_KEY)
 

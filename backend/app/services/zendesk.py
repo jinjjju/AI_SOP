@@ -1,6 +1,6 @@
 """Zendesk Help Center 아티클 소스.
 
-로컬 개발은 MockZendeskClient(seed_data JSON), 회사 PC에서는 .env에
+로컬 개발은 MockZendeskClient(seed_data JSON), PC에서는 .env에
 ZENDESK_SUBDOMAIN / ZENDESK_EMAIL / ZENDESK_API_TOKEN 설정 후 USE_MOCK=false.
 """
 import json

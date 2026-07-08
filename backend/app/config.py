@@ -4,7 +4,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 SEED_DATA_DIR = BASE_DIR / "seed_data"
 
-# 로컬 개발은 mock, 회사 PC에서는 .env 로 실제 키 주입 후 USE_MOCK=false
+# 로컬 개발은 mock, PC에서는 .env 로 실제 키 주입 후 USE_MOCK=false
 USE_MOCK = os.getenv("USE_MOCK", "true").lower() != "false"
 
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{BASE_DIR / 'sop_admin.db'}")
