@@ -1,0 +1,21 @@
+# Python
+backend/.venv/
+__pycache__/
+*.py[cod]
+
+# 로컬 데이터 (런타임 생성물 — 커밋 금지)
+backend/sop_admin.db
+backend/seed_data/overrides.json
+
+# 환경변수 (실제 API 키 — 커밋 금지)
+.env
+backend/.env
+
+# Node
+node_modules/
+frontend/dist/
+
+# OS / Editor
+.DS_Store
+.idea/
+.vscode/
