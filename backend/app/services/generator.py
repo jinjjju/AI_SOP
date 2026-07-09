@@ -4,6 +4,7 @@
 - 보완 초안: 변경 감지 건 → 기본(revise) 프롬프트로 기존 SOP 보완 → pending_review 버전
 담당자는 스코프만 입력하면 되고, 모델/프롬프트는 AppSettings의 기본값이 자동 적용된다.
 """
+import json
 import re
 from typing import Optional
 
@@ -11,7 +12,16 @@ from fastapi import HTTPException
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from ..models import AiSop, AppSettings, Article, ChangeDetection, LlmUsage, PromptTemplate, SopVersion
+from ..models import (
+    AiSop,
+    AppSettings,
+    Article,
+    ChangeDetection,
+    InquiryType,
+    LlmUsage,
+    PromptTemplate,
+    SopVersion,
+)
 from .audit import log
 from .llm import get_llm_provider
 
@@ -107,7 +117,11 @@ def _extract_title(content: str, fallback: str) -> str:
 
 
 def generate_new_sop(
-    db: Session, scope: str, article_ids: Optional[list[int]] = None, actor: str = ""
+    db: Session,
+    scope: str,
+    article_ids: Optional[list[int]] = None,
+    actor: str = "",
+    inquiry_type_id: Optional[int] = None,
 ) -> AiSop:
     settings = get_settings(db)
     template = _get_template(db, settings.default_generate_template_id, "generate")
@@ -116,6 +130,14 @@ def generate_new_sop(
         articles = db.query(Article).filter(Article.id.in_(article_ids)).all()
     else:
         articles = search_articles(db, scope)
+        # 문의유형이 지정되면 유형에 등록된 관련 아티클을 우선 포함
+        if inquiry_type_id:
+            itype = db.get(InquiryType, inquiry_type_id)
+            if itype:
+                merged = {a.id: a for a in itype.articles}
+                for a in articles:
+                    merged.setdefault(a.id, a)
+                articles = list(merged.values())[:MAX_SEARCH_RESULTS]
 
     user_prompt = _fill(
         template.user_prompt_template,
@@ -131,6 +153,7 @@ def generate_new_sop(
         status="draft",
         current_version=1,
         created_by=actor,
+        inquiry_type_id=inquiry_type_id,
         articles=articles,
     )
     db.add(sop)
@@ -226,6 +249,80 @@ def create_revision_draft(
     db.commit()
     db.refresh(version)
     return version
+
+
+def create_manual_revision_draft(db: Session, sop: AiSop, article: Article, actor: str = "") -> SopVersion:
+    """수동 링크 검수에서 넘어온 아티클 기준 보완 초안 (변경 감지 없이)."""
+    settings = get_settings(db)
+    template = _get_template(db, settings.default_revise_template_id, "revise")
+
+    user_prompt = _fill(
+        template.user_prompt_template,
+        scope=sop.target_scope,
+        current_sop=sop.content,
+        articles=_format_articles([article]),
+    )
+    content = _call_llm(db, actor, "revise", settings.default_model, template.system_prompt, user_prompt, sop.id)
+
+    version = SopVersion(
+        sop_id=sop.id,
+        version=next_version(db, sop.id),
+        content=content,
+        source="revision",
+        model_used=settings.default_model,
+        created_by=actor,
+        template_id=template.id,
+        status="pending_review",
+    )
+    db.add(version)
+    if article not in sop.articles:
+        sop.articles.append(article)
+    log(
+        db, actor, "draft_created", "sop", sop.id,
+        f"'{sop.title}' 보완 초안 v{version.version} 생성 (수동 링크 검수: '{article.title}')",
+    )
+    db.commit()
+    db.refresh(version)
+    return version
+
+
+def triage_article(db: Session, itype: InquiryType, article: Article, actor: str = "") -> dict:
+    """수동 입력 아티클이 해당 문의유형의 AI SOP로 적합한지 + 보완/신규 여부를 LLM이 판정."""
+    template = _get_template(db, None, "triage")
+    settings = get_settings(db)
+
+    existing = db.query(AiSop).filter(AiSop.inquiry_type_id == itype.id).all()
+    existing_desc = (
+        "\n".join(f"- [SOP #{s.id}] {s.title} (상태: {s.status}) — 스코프: {s.target_scope}" for s in existing)
+        or "(기존 SOP 없음)"
+    )
+    user_prompt = _fill(
+        template.user_prompt_template,
+        inquiry_type=itype.name,
+        condition=itype.condition or "(조건 미작성)",
+        articles=_format_articles([article]),
+        existing_sops=existing_desc,
+    )
+    raw = _call_llm(db, actor, "triage", settings.default_model, template.system_prompt, user_prompt)
+    db.commit()
+
+    try:
+        parsed = json.loads(raw[raw.index("{") : raw.rindex("}") + 1])
+    except (ValueError, json.JSONDecodeError):
+        parsed = {"suitable": False, "reason": f"판정 응답 파싱 실패 — 원문: {raw[:300]}", "action": "none"}
+
+    action = parsed.get("action", "none")
+    if action not in ("revise", "create", "none"):
+        action = "none"
+    if action == "revise" and not existing:
+        action = "create"  # 보완 대상이 없으면 신규로 강등
+
+    return {
+        "suitable": bool(parsed.get("suitable")),
+        "reason": str(parsed.get("reason", "")),
+        "action": action,
+        "candidate_sops": existing if action == "revise" else [],
+    }
 
 
 def test_sop(db: Session, sop: AiSop, question: str, actor: str = "") -> dict:

@@ -4,7 +4,7 @@
 ZENDESK_SUBDOMAIN / ZENDESK_EMAIL / ZENDESK_API_TOKEN 설정 후 USE_MOCK=false.
 """
 import json
-from typing import Protocol
+from typing import Optional, Protocol
 
 import httpx
 
@@ -16,6 +16,10 @@ OVERRIDES_FILE = config.SEED_DATA_DIR / "overrides.json"
 class ZendeskClient(Protocol):
     def list_articles(self) -> list[dict]:
         """[{zendesk_id, title, body, section, updated_at}, ...]"""
+        ...
+
+    def get_article(self, zendesk_id: int) -> Optional[dict]:
+        """단건 조회 (수동 링크 검수용). 없으면 None."""
         ...
 
 
@@ -32,6 +36,12 @@ class MockZendeskClient:
             }
             articles = [overrides.get(a["zendesk_id"], a) for a in articles]
         return articles
+
+    def get_article(self, zendesk_id: int) -> Optional[dict]:
+        for a in self.list_articles():
+            if a["zendesk_id"] == zendesk_id:
+                return a
+        return None
 
 
 class RealZendeskClient:
@@ -63,6 +73,23 @@ class RealZendeskClient:
                     )
                 url = data.get("next_page")
         return articles
+
+    def get_article(self, zendesk_id: int) -> Optional[dict]:
+        base = f"https://{config.ZENDESK_SUBDOMAIN}.zendesk.com"
+        url = f"{base}/api/v2/help_center/{config.ZENDESK_LOCALE}/articles/{zendesk_id}.json"
+        auth = (f"{config.ZENDESK_EMAIL}/token", config.ZENDESK_API_TOKEN)
+        with httpx.Client(auth=auth, timeout=30) as client:
+            resp = client.get(url)
+            if resp.status_code == 404:
+                return None
+            a = resp.raise_for_status().json().get("article", {})
+        return {
+            "zendesk_id": a["id"],
+            "title": a["title"],
+            "body": a.get("body") or "",
+            "section": "",
+            "updated_at": a.get("updated_at", ""),
+        }
 
 
 def get_zendesk_client() -> ZendeskClient:

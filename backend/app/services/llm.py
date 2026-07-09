@@ -69,6 +69,21 @@ class MockLLMProvider:
         )
 
     def _generate_text(self, model: str, system_prompt: str, user_prompt: str) -> str:
+        if "[판단 요청]" in user_prompt:
+            # 수동 링크 검수: 기존 SOP 유무에 따라 보완/신규를 가르는 그럴듯한 판정 JSON
+            has_existing = "(기존 SOP 없음)" not in user_prompt
+            action = "revise" if has_existing else "create"
+            import json as _json
+
+            return _json.dumps(
+                {
+                    "suitable": True,
+                    "reason": "(mock) 아티클 내용이 문의유형 조건과 일치합니다. "
+                    + ("기존 SOP가 있어 보완을 권장합니다." if has_existing else "해당 유형의 SOP가 없어 신규 생성을 권장합니다."),
+                    "action": action,
+                },
+                ensure_ascii=False,
+            )
         if "[기존 AI SOP]" in user_prompt:
             return self._mock_revise(model, user_prompt)
         if "[고객 질문]" in user_prompt:

@@ -74,6 +74,7 @@ export default function SopList() {
               </div>
             </div>
             <span className="row" style={{ gap: 6 }}>
+              {s.inquiry_type_name && <span className="chip">❖ {s.inquiry_type_name}</span>}
               {s.has_pending && (
                 <span className="chip yellow">
                   검토 대기{s.pending_since && ` · ${fmtDate(s.pending_since)}`}

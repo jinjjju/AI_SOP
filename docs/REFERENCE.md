@@ -9,6 +9,8 @@
 erDiagram
     articles ||--o{ change_detections : "변경 감지"
     articles }o--o{ ai_sops : "sop_articles (참조)"
+    articles }o--o{ inquiry_types : "inquiry_articles (관련 링크)"
+    inquiry_types ||--o{ ai_sops : "문의유형 연결"
     ai_sops ||--o{ sop_versions : "버전 이력"
     change_detections |o--o{ sop_versions : "보완초안 출처"
     prompt_templates |o--o{ sop_versions : "사용 템플릿"
@@ -34,12 +36,18 @@ erDiagram
         text diff_summary "unified diff (최대 40줄)"
         string status "open | draft_created | applied | dismissed"
     }
+    inquiry_types {
+        int id PK
+        string name UK "반품/교환/무응답 … (계속 추가됨)"
+        text condition "링크 검수 시 LLM 적합성 판단 기준"
+    }
     ai_sops {
         int id PK
         string title
         text target_scope "타겟 문의 스코프"
         text content "SOP 본문 (markdown)"
         string created_by "생성 담당자 닉네임"
+        int inquiry_type_id FK "연결 문의유형 (nullable)"
         string status "draft | confirmed | published"
         int current_version
         datetime created_at
@@ -133,11 +141,24 @@ erDiagram
 
 `prompt_templates.user_prompt_template` 안의 플레이스홀더를 `generator._fill()`이 단순 문자열 치환한다.
 
+프롬프트 용도(purpose)는 3종: **generate**(신규 생성) / **revise**(보완) / **triage**(수동 링크 검수 판단).
+
 | 플레이스홀더 | 주입 값 | 사용 용도 |
 |---|---|---|
 | `{scope}` | 담당자가 입력한 타겟 문의 스코프 | generate / revise |
-| `{articles}` | 참조 아티클 블록 (제목·섹션·Zendesk ID·본문 4,000자 제한, `---` 구분). revise에서는 끝에 `[변경 diff]` 첨부 | generate / revise |
+| `{articles}` | 참조 아티클 블록 (제목·섹션·Zendesk ID·본문 4,000자 제한, `---` 구분). 변경 감지 revise에서는 끝에 `[변경 diff]` 첨부 | 공통 |
 | `{current_sop}` | 기존 SOP 본문 | revise 전용 |
+| `{inquiry_type}` / `{condition}` | 문의유형명 / 유형 조건 설명 | triage 전용 |
+| `{existing_sops}` | 해당 유형의 기존 SOP 목록 (없으면 `(기존 SOP 없음)`) | triage 전용 |
+
+triage 프롬프트는 반드시 `{"suitable": bool, "reason": str, "action": "revise"|"create"|"none"}` JSON 하나를 출력해야 하며,
+백엔드가 첫 `{`~마지막 `}` 구간을 파싱한다 (파싱 실패 시 suitable=false 처리). mock 분기 마커: `[판단 요청]`.
+
+### 아티클 수집 필터 (`backend/article_filters.json`)
+
+동기화 시 **신규 아티클**의 제목으로 수집 여부 결정 (기존 임시 프로세스와 동일 포맷, `services/filters.py`):
+`in_scope_prefixes`(접두어 일치 시 무조건 수집, 최우선) → `exclusion_keywords`(포함 시 제외) → `out_scope_prefixes`(접두어 일치 시 제외) → 기본 수집.
+어드민 설정 화면(GET/PUT `/api/filters`)과 파일 직접 수정 모두 지원.
 
 LLM 호출 시그니처: `LLMProvider.generate(model, system_prompt, user_prompt) -> str` (반환값 = SOP markdown 전문).
 
@@ -168,6 +189,18 @@ Base URL: `http://localhost:8000`. 🔒 = `require_manager` (가입 필요).
 | GET | `/api/articles` | query: `query?`(키워드 검색, 없으면 전체) | `Article[]` (body 제외) |
 | GET | `/api/articles/{id}` | | `Article` (body 포함) |
 
+### 문의유형 · 수동 링크 검수
+
+| Method | Path | 요청 | 응답 |
+|---|---|---|---|
+| GET | `/api/inquiry-types` | | `InquiryType[]` — 관련 아티클, SOP 수 포함 |
+| POST 🔒 | `/api/inquiry-types` | `{name, condition}` | `InquiryType` |
+| PUT 🔒 | `/api/inquiry-types/{id}` | `{name, condition}` | `InquiryType` |
+| POST 🔒 | `/api/inquiry-types/{id}/articles` | `{url}` — Zendesk URL/ID, 미수집 아티클이면 fetch 후 저장 | `InquiryType` |
+| DELETE 🔒 | `/api/inquiry-types/{id}/articles/{article_id}` | | `InquiryType` |
+| POST 🔒 | `/api/triage` | `{url, inquiry_type_id}` | `{article, suitable, reason, action, candidate_sops}` — LLM 판정만 하고 실행은 담당자가 결정 |
+| GET / PUT | `/api/filters` | PUT: `{in_scope_prefixes, exclusion_keywords, out_scope_prefixes}` | 수집 필터 (article_filters.json) |
+
 ### 변경 감지
 
 | Method | Path | 요청 | 응답 |
@@ -183,7 +216,8 @@ Base URL: `http://localhost:8000`. 🔒 = `require_manager` (가입 필요).
 |---|---|---|---|
 | GET | `/api/sops` | query: `status?` | `SopSummary[]` — `has_pending`, `pending_since`(검토 대기 초안 생성 일시) 포함 |
 | GET | `/api/sops/published` | | **개발팀 전달용** `PublishedSop[]` |
-| POST 🔒 | `/api/sops/generate` | `{scope, article_ids?}` — `article_ids` 생략 시 스코프 기반 자동 검색 | `SopDetail` (draft) |
+| POST 🔒 | `/api/sops/generate` | `{scope, article_ids?, inquiry_type_id?}` — `article_ids` 생략 시 자동 검색(+유형 등록 아티클 우선) | `SopDetail` (draft) |
+| POST 🔒 | `/api/sops/{id}/revise` | `{article_id}` — 수동 검수 확정분으로 보완 초안 생성 (변경 감지 없이) | `SopVersion(pending_review)` |
 | GET | `/api/sops/{id}` | | `SopDetail` — `articles`, `versions` 포함 |
 | PATCH 🔒 | `/api/sops/{id}` | `{title?, content?, target_scope?}` — content 변경 시 manual 새 버전 | `SopDetail` |
 | POST 🔒 | `/api/sops/{id}/status` | `{status}` — 전이 규칙 위반 시 400 | `SopDetail` |

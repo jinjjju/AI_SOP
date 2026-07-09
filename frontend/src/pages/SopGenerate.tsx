@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 import { Spinner, useToast } from "../components/ui";
-import type { AppSettings, PromptTemplate, SopDetail } from "../types";
+import type { AppSettings, InquiryType, PromptTemplate, SopDetail } from "../types";
 
 const EXAMPLES = [
   "와우 멤버십 해지와 환불 문의",
@@ -16,12 +16,15 @@ export default function SopGenerate() {
   const [loading, setLoading] = useState(false);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [templates, setTemplates] = useState<PromptTemplate[]>([]);
+  const [types, setTypes] = useState<InquiryType[]>([]);
+  const [typeId, setTypeId] = useState<number | "">("");
   const toast = useToast();
   const nav = useNavigate();
 
   useEffect(() => {
     api.get<AppSettings>("/api/settings").then(setSettings).catch(() => {});
     api.get<PromptTemplate[]>("/api/prompts").then(setTemplates).catch(() => {});
+    api.get<InquiryType[]>("/api/inquiry-types").then(setTypes).catch(() => {});
   }, []);
 
   const templateName =
@@ -31,7 +34,10 @@ export default function SopGenerate() {
     if (!scope.trim() || loading) return;
     setLoading(true);
     try {
-      const sop = await api.post<SopDetail>("/api/sops/generate", { scope: scope.trim() });
+      const sop = await api.post<SopDetail>("/api/sops/generate", {
+        scope: scope.trim(),
+        inquiry_type_id: typeId === "" ? null : typeId,
+      });
       toast("AI SOP 초안이 생성되었습니다. 검토 후 컨펌하세요.");
       nav(`/sops/${sop.id}`);
     } catch (e) {
@@ -59,6 +65,18 @@ export default function SopGenerate() {
         />
         <div className="prompt-actions">
           <div className="row" style={{ gap: 8 }}>
+            <select
+              className="select"
+              style={{ width: "auto", padding: "4px 28px 4px 12px", borderRadius: 999, fontSize: 12.5 }}
+              value={typeId}
+              onChange={(e) => setTypeId(e.target.value === "" ? "" : Number(e.target.value))}
+              title="문의유형을 선택하면 유형에 등록된 관련 아티클이 우선 참조됩니다"
+            >
+              <option value="">문의유형 (선택)</option>
+              {types.map((t) => (
+                <option key={t.id} value={t.id}>❖ {t.name}</option>
+              ))}
+            </select>
             {settings && <span className="chip accent">✦ {settings.default_model}</span>}
             <span className="chip">{templateName}</span>
           </div>

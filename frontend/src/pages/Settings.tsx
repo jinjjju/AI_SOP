@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
 import { Spinner, useToast } from "../components/ui";
-import type { AppSettings, Manager, ModelPrice, ModelsInfo, PromptTemplate, UsageSummary } from "../types";
+import type { AppSettings, Filters, Manager, ModelPrice, ModelsInfo, PromptTemplate, UsageSummary } from "../types";
 
 const usd = (v: number) => `$${v.toFixed(v >= 1 ? 2 : 4)}`;
 const krw = (v: number) => `₩${Math.round(v).toLocaleString("ko-KR")}`;
@@ -81,6 +81,9 @@ export default function Settings() {
         </div>
       </div>
 
+      <div className="section-title">아티클 수집 필터 (article_filters.json)</div>
+      <FiltersCard />
+
       <div className="section-title">LLM 사용량 · 비용</div>
       <UsageCard />
 
@@ -91,6 +94,68 @@ export default function Settings() {
         <TemplateEditor key={t.id} template={t} onSaved={load} />
       ))}
       <NewTemplate onSaved={load} />
+    </div>
+  );
+}
+
+function FiltersCard() {
+  const [filters, setFilters] = useState<Filters | null>(null);
+  const [draft, setDraft] = useState({ in_scope: "", exclusion: "", out_scope: "" });
+  const toast = useToast();
+
+  useEffect(() => {
+    api.get<Filters>("/api/filters").then((f) => {
+      setFilters(f);
+      setDraft({
+        in_scope: f.in_scope_prefixes.join("\n"),
+        exclusion: f.exclusion_keywords.join("\n"),
+        out_scope: f.out_scope_prefixes.join("\n"),
+      });
+    }).catch(() => {});
+  }, []);
+
+  if (!filters) return null;
+
+  const lines = (s: string) => s.split("\n").map((l) => l.trim()).filter(Boolean);
+  const save = async () => {
+    try {
+      await api.put("/api/filters", {
+        in_scope_prefixes: lines(draft.in_scope),
+        exclusion_keywords: lines(draft.exclusion),
+        out_scope_prefixes: lines(draft.out_scope),
+      });
+      toast("수집 필터가 저장되었습니다. 다음 동기화부터 적용됩니다.");
+    } catch (e) {
+      toast((e as Error).message, true);
+    }
+  };
+
+  return (
+    <div className="card">
+      <p className="sub" style={{ marginTop: 0 }}>
+        아티클 동기화 시 제목 기준으로 수집 여부를 결정합니다 (한 줄에 하나씩).
+        우선순위: <strong>필수 수집 &gt; 제외</strong>. 파일(<code>backend/article_filters.json</code>)을 직접 수정해도 동일하게 동작합니다.
+      </p>
+      <div className="grid-2" style={{ gridTemplateColumns: "1fr 1fr 1fr" }}>
+        <label className="field">
+          <span>in_scope_prefixes — 이 접두어로 시작하면 반드시 수집</span>
+          <textarea className="textarea mono" value={draft.in_scope}
+            onChange={(e) => setDraft({ ...draft, in_scope: e.target.value })} />
+        </label>
+        <label className="field">
+          <span>exclusion_keywords — 제목에 포함되면 제외</span>
+          <textarea className="textarea mono" value={draft.exclusion}
+            onChange={(e) => setDraft({ ...draft, exclusion: e.target.value })} />
+        </label>
+        <label className="field">
+          <span>out_scope_prefixes — 이 접두어로 시작하면 제외</span>
+          <textarea className="textarea mono" value={draft.out_scope}
+            onChange={(e) => setDraft({ ...draft, out_scope: e.target.value })} />
+        </label>
+      </div>
+      <div className="row" style={{ justifyContent: "flex-end" }}>
+        <button className="btn small" onClick={save}>필터 저장</button>
+      </div>
     </div>
   );
 }
@@ -315,9 +380,9 @@ function TemplateEditor({ template, onSaved }: { template: PromptTemplate; onSav
   return (
     <details className="article-acc">
       <summary>
-        {template.purpose === "generate" ? "✦" : "♺"} {template.name}
+        {template.purpose === "generate" ? "✦" : template.purpose === "revise" ? "♺" : "⚖"} {template.name}
         <span className="chip" style={{ marginLeft: "auto" }}>
-          {template.purpose === "generate" ? "신규 생성용" : "보완용"}
+          {template.purpose === "generate" ? "신규 생성용" : template.purpose === "revise" ? "보완용" : "판단용(링크 검수)"}
         </span>
       </summary>
       <div style={{ padding: "4px 14px 14px" }}>
@@ -403,6 +468,7 @@ function TemplateFields<T extends Omit<PromptTemplate, "id">>({
           >
             <option value="generate">신규 생성용</option>
             <option value="revise">보완용</option>
+            <option value="triage">판단용(링크 검수)</option>
           </select>
         </label>
       </div>
@@ -415,7 +481,7 @@ function TemplateFields<T extends Omit<PromptTemplate, "id">>({
         />
       </label>
       <label className="field">
-        <span>유저 프롬프트 템플릿 — 플레이스홀더: {"{scope}"} {"{articles}"} {"{current_sop}"}</span>
+        <span>유저 프롬프트 템플릿 — 플레이스홀더: {"{scope}"} {"{articles}"} {"{current_sop}"} · 판단용: {"{inquiry_type}"} {"{condition}"} {"{existing_sops}"}</span>
         <textarea
           className="textarea mono"
           style={{ minHeight: 160 }}

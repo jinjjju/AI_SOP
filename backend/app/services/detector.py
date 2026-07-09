@@ -10,6 +10,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from ..models import Article, ChangeDetection
+from .filters import is_in_scope
 from .zendesk import get_zendesk_client
 
 
@@ -32,12 +33,16 @@ def sync_articles(db: Session) -> dict:
     client = get_zendesk_client()
     remote = client.list_articles()
 
-    created = updated = new_detections = 0
+    created = updated = new_detections = skipped = 0
     for item in remote:
         body = item.get("body") or ""
         new_hash = _hash(body)
         article = db.query(Article).filter(Article.zendesk_id == item["zendesk_id"]).first()
         if article is None:
+            # 신규 아티클은 수집 필터(article_filters.json) 통과분만 저장
+            if not is_in_scope(item["title"]):
+                skipped += 1
+                continue
             db.add(
                 Article(
                     zendesk_id=item["zendesk_id"],
@@ -88,4 +93,5 @@ def sync_articles(db: Session) -> dict:
         "created": created,
         "updated": updated,
         "new_detections": new_detections,
+        "skipped": skipped,
     }

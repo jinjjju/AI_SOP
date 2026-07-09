@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from .. import config, schemas
 from ..database import get_db
 from ..models import PromptTemplate
+from ..services import filters as filter_service
 from ..services.audit import get_actor, log
 from ..services.generator import get_settings
 
@@ -43,6 +44,20 @@ def update_settings(body: schemas.SettingsIn, db: Session = Depends(get_db), act
     db.commit()
     db.refresh(settings)
     return settings
+
+
+@router.get("/filters", response_model=schemas.FiltersModel)
+def read_filters():
+    return filter_service.load_filters()
+
+
+@router.put("/filters", response_model=schemas.FiltersModel)
+def update_filters(body: schemas.FiltersModel, db: Session = Depends(get_db), actor: str = Depends(get_actor)):
+    saved = filter_service.save_filters(body.model_dump())
+    log(db, actor, "filters_updated", "settings", None,
+        f"수집 필터 수정 (in:{len(saved['in_scope_prefixes'])} / excl:{len(saved['exclusion_keywords'])} / out:{len(saved['out_scope_prefixes'])})")
+    db.commit()
+    return saved
 
 
 @router.get("/prompts", response_model=list[schemas.PromptTemplateOut])

@@ -19,6 +19,29 @@ export interface SopSummary {
   updated_at: string;
   has_pending: boolean;
   pending_since: string | null;
+  inquiry_type_name: string;
+}
+
+export interface InquiryType {
+  id: number;
+  name: string;
+  condition: string;
+  articles: Article[];
+  sop_count: number;
+}
+
+export interface TriageResult {
+  article: Article;
+  suitable: boolean;
+  reason: string;
+  action: "revise" | "create" | "none";
+  candidate_sops: SopSummary[];
+}
+
+export interface Filters {
+  in_scope_prefixes: string[];
+  exclusion_keywords: string[];
+  out_scope_prefixes: string[];
 }
 
 export interface SopVersion {

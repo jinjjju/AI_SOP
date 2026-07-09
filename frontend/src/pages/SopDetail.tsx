@@ -59,6 +59,7 @@ export default function SopDetail() {
           </span>
         </div>
         <div className="row">
+          {sop.inquiry_type_name && <span className="chip">❖ {sop.inquiry_type_name}</span>}
           <StatusBadge status={sop.status} />
           {sop.status === "draft" && (
             <button className="btn primary small" disabled={busy} onClick={() => move("confirmed")}>

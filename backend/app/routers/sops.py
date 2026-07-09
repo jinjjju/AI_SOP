@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from .. import schemas
 from ..database import get_db
-from ..models import AiSop, ChangeDetection, SopVersion
+from ..models import AiSop, Article, ChangeDetection, SopVersion
 from ..services import generator
 from ..services.audit import get_actor, log, require_manager
 
@@ -40,6 +40,7 @@ def list_sops(status: str = "", db: Session = Depends(get_db)):
             **{c.name: getattr(s, c.name) for c in AiSop.__table__.columns},
             "has_pending": s.id in pending_since,
             "pending_since": pending_since.get(s.id),
+            "inquiry_type_name": s.inquiry_type_name,
         }
         for s in sops
     ]
@@ -71,7 +72,9 @@ def generate(body: schemas.GenerateIn, db: Session = Depends(get_db), actor: str
     """스코프 입력 → 아티클 자동 검색 → 기본 모델/프롬프트로 SOP 생성 (원스텝)."""
     if not body.scope.strip():
         raise HTTPException(400, "타겟 문의 스코프를 입력하세요.")
-    return generator.generate_new_sop(db, body.scope.strip(), body.article_ids, actor)
+    return generator.generate_new_sop(
+        db, body.scope.strip(), body.article_ids, actor, body.inquiry_type_id
+    )
 
 
 @router.get("/{sop_id}", response_model=schemas.SopDetailOut)
@@ -129,6 +132,18 @@ def regenerate(
     if sop.status != "draft":
         raise HTTPException(400, "draft 상태에서만 재생성할 수 있습니다.")
     return generator.regenerate_sop(db, sop, body.article_ids, actor)
+
+
+@router.post("/{sop_id}/revise", response_model=schemas.SopVersionOut)
+def revise_from_article(
+    sop_id: int, body: schemas.ReviseIn, db: Session = Depends(get_db), actor: str = Depends(require_manager)
+):
+    """수동 링크 검수에서 확정된 아티클로 보완 초안 생성 (변경 감지 없이)."""
+    sop = _get_sop(db, sop_id)
+    article = db.get(Article, body.article_id)
+    if article is None:
+        raise HTTPException(404, "아티클을 찾을 수 없습니다.")
+    return generator.create_manual_revision_draft(db, sop, article, actor)
 
 
 @router.post("/{sop_id}/versions/{version}/apply", response_model=schemas.SopDetailOut)

@@ -32,6 +32,7 @@ class SopSummaryOut(BaseModel):
     updated_at: datetime
     has_pending: bool = False  # 검토 대기 중인 보완 초안 존재 여부
     pending_since: Optional[datetime] = None  # 보완 초안(감지 케이스) 생성 일시
+    inquiry_type_name: str = ""  # 연결된 문의유형명 (없으면 "")
 
 
 class ChangeDetectionOut(BaseModel):
@@ -147,6 +148,7 @@ class BudgetStatus(BaseModel):
 class GenerateIn(BaseModel):
     scope: str
     article_ids: Optional[list[int]] = None  # None이면 스코프 기반 자동 검색
+    inquiry_type_id: Optional[int] = None  # 연결할 문의유형 (선택)
 
 
 class RegenerateIn(BaseModel):
@@ -178,6 +180,49 @@ class SyncResult(BaseModel):
     created: int
     updated: int
     new_detections: int
+    skipped: int = 0  # 수집 필터로 제외된 신규 아티클 수
+
+
+class InquiryTypeIn(BaseModel):
+    name: str
+    condition: str = ""
+
+
+class InquiryTypeOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    condition: str
+    articles: list[ArticleOut] = []
+    sop_count: int = 0
+
+
+class ArticleLinkIn(BaseModel):
+    url: str  # Zendesk 아티클 URL 또는 아티클 ID
+
+
+class TriageIn(BaseModel):
+    url: str
+    inquiry_type_id: int
+
+
+class TriageOut(BaseModel):
+    article: ArticleOut
+    suitable: bool
+    reason: str
+    action: str  # revise | create | none
+    candidate_sops: list[SopSummaryOut] = []  # action=revise일 때 보완 대상 후보
+
+
+class FiltersModel(BaseModel):
+    in_scope_prefixes: list[str] = []
+    exclusion_keywords: list[str] = []
+    out_scope_prefixes: list[str] = []
+
+
+class ReviseIn(BaseModel):
+    article_id: int
 
 
 class ManagerOut(BaseModel):

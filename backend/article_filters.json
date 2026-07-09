@@ -1,0 +1,13 @@
+{
+  "in_scope_prefixes": [
+    "반품",
+    "교환",
+    "환불"
+  ],
+  "exclusion_keywords": [
+    "임직원 전용"
+  ],
+  "out_scope_prefixes": [
+    "[사내]"
+  ]
+}

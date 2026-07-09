@@ -14,6 +14,30 @@ sop_articles = Table(
     Column("article_id", ForeignKey("articles.id", ondelete="CASCADE"), primary_key=True),
 )
 
+# 문의유형 ↔ 관련 아티클 링크 N:M
+inquiry_articles = Table(
+    "inquiry_articles",
+    Base.metadata,
+    Column("inquiry_type_id", ForeignKey("inquiry_types.id", ondelete="CASCADE"), primary_key=True),
+    Column("article_id", ForeignKey("articles.id", ondelete="CASCADE"), primary_key=True),
+)
+
+
+class InquiryType(Base):
+    """문의유형 (반품/교환/무응답 …). 유형은 계속 늘어나며, 유형별 관련 아티클 링크는 가변.
+    condition은 수동 링크 검수 시 LLM이 적합성을 판단하는 기준이 된다."""
+
+    __tablename__ = "inquiry_types"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True)
+    condition: Mapped[str] = mapped_column(Text, default="")  # 이 유형에 해당하는 문의 조건 설명
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    articles = relationship("Article", secondary=inquiry_articles)
+    sops = relationship("AiSop", back_populates="inquiry_type")
+
 
 class Article(Base):
     __tablename__ = "articles"
@@ -140,6 +164,9 @@ class AiSop(Base):
     target_scope: Mapped[str] = mapped_column(Text, default="")
     content: Mapped[str] = mapped_column(Text, default="")
     created_by: Mapped[str] = mapped_column(String(100), default="")
+    inquiry_type_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("inquiry_types.id"), nullable=True
+    )
     # draft → confirmed → published
     status: Mapped[str] = mapped_column(String(20), default="draft")
     current_version: Mapped[int] = mapped_column(Integer, default=1)
@@ -147,9 +174,14 @@ class AiSop(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     articles = relationship("Article", secondary=sop_articles, back_populates="sops")
+    inquiry_type = relationship("InquiryType", back_populates="sops")
     versions = relationship(
         "SopVersion", back_populates="sop", cascade="all, delete-orphan", order_by="SopVersion.version"
     )
+
+    @property
+    def inquiry_type_name(self) -> str:
+        return self.inquiry_type.name if self.inquiry_type else ""
 
 
 class SopVersion(Base):

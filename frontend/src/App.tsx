@@ -10,11 +10,13 @@ import SopGenerate from "./pages/SopGenerate";
 import SopList from "./pages/SopList";
 import SopDetail from "./pages/SopDetail";
 import History from "./pages/History";
+import InquiryTypes from "./pages/InquiryTypes";
 import Settings from "./pages/Settings";
 
 const NAV = [
   { to: "/", icon: "◧", label: "대시보드" },
   { to: "/generate", icon: "✦", label: "SOP 생성" },
+  { to: "/inquiry", icon: "❖", label: "문의유형·검수" },
   { to: "/sops", icon: "▤", label: "AI SOP 관리" },
   { to: "/history", icon: "≣", label: "히스토리" },
   { to: "/settings", icon: "⚙", label: "설정" },
@@ -23,6 +25,7 @@ const NAV = [
 const TITLES: [RegExp, string][] = [
   [/^\/$/, "대시보드"],
   [/^\/generate/, "새 AI SOP 생성"],
+  [/^\/inquiry/, "문의유형 · 아티클 검수"],
   [/^\/sops\/\d+/, "AI SOP 상세"],
   [/^\/sops/, "AI SOP 관리"],
   [/^\/changes/, "아티클 변경 감지"],
@@ -170,6 +173,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/generate" element={<SopGenerate />} />
+            <Route path="/inquiry" element={<InquiryTypes />} />
             <Route path="/sops" element={<SopList />} />
             <Route path="/sops/:id" element={<SopDetail />} />
             <Route path="/changes/:id" element={<ChangeDetail />} />
