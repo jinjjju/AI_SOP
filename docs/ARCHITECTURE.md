@@ -17,7 +17,7 @@ flowchart LR
         UI["어드민 UI<br/>대시보드 · SOP 생성 · 문의유형/검수<br/>검토/승인 · 히스토리 · 설정(필터·단가·예산)"]
     end
 
-    subgraph Server["백엔드 (FastAPI, :8000)"]
+    subgraph Server["백엔드 (FastAPI, :8001)"]
         API["REST API /api/*"]
         GEN["generator<br/>생성·보완·검수(triage) 파이프라인"]
         DET["detector<br/>변경 감지 (해시 비교)"]

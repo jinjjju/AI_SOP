@@ -13,11 +13,11 @@
 Python 3.9+ / Node 18+ 필요. mock 모드는 API 키 없이 동작한다.
 
 ```bash
-# 백엔드 (http://localhost:8000)
+# 백엔드 (http://localhost:8001)
 cd backend
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # 최초 1회
 .venv/bin/python seed.py                                             # 최초 1회 (샘플 데이터)
-.venv/bin/uvicorn app.main:app --reload --port 8000
+.venv/bin/uvicorn app.main:app --reload --port 8001
 
 # 프론트엔드 (http://localhost:5173)
 cd frontend
@@ -32,7 +32,7 @@ npm run dev
    - 원복: `.venv/bin/python seed.py --reset-changes` (전체 초기화: `--reset`)
 3. **보완초안 확인**: 보완초안이 생성되면 대시보드 "검토가 필요한 보완초안" 섹션과 SOP 목록의 `검토 대기` 뱃지로 표시됨 → SOP 상세 상단에서 현재본과 비교 후 승인/거절
 4. **테스트**: SOP 상세 하단 챗봇 테스트에서 고객 질문 입력
-5. **개발팀 전달**: AI SOP 관리 → [발행본 JSON] 다운로드 또는 `curl localhost:8000/api/sops/published`
+5. **개발팀 전달**: AI SOP 관리 → [발행본 JSON] 다운로드 또는 `curl localhost:8001/api/sops/published`
 
 ## 담당자(간이 가입) · 히스토리
 

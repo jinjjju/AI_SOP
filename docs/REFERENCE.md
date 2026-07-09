@@ -170,7 +170,7 @@ LLM 호출 시그니처: `LLMProvider.generate(model, system_prompt, user_prompt
 
 ## 4. API 레퍼런스
 
-Base URL: `http://localhost:8000`. 🔒 = `require_manager` (가입 필요).
+Base URL: `http://localhost:8001`. 🔒 = `require_manager` (가입 필요).
 
 ### 가입/담당자/이력
 
