@@ -2,6 +2,7 @@
   "in_scope_prefixes": [
     "반품",
     "교환",
+    "반품",
     "환불"
   ],
   "exclusion_keywords": [

@@ -98,32 +98,100 @@ export default function Settings() {
   );
 }
 
+/* 키워드 칩 입력 — 쉼표/엔터로 추가, 여러 개 붙여넣기(쉼표·줄바꿈 혼용) 자동 분리, ✕로 개별 삭제 */
+function TagInput({
+  label,
+  hint,
+  values,
+  onChange,
+}: {
+  label: string;
+  hint: string;
+  values: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const [input, setInput] = useState("");
+
+  const add = (raw: string) => {
+    const parts = raw.split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
+    if (parts.length === 0) return;
+    const next = [...values];
+    for (const p of parts) if (!next.includes(p)) next.push(p);
+    onChange(next);
+    setInput("");
+  };
+
+  return (
+    <label className="field">
+      <span>
+        {label} <strong style={{ color: "var(--text)" }}>({values.length})</strong> — {hint}
+      </span>
+      <div
+        className="input"
+        style={{ display: "flex", flexWrap: "wrap", gap: 6, minHeight: 76, alignContent: "flex-start", cursor: "text" }}
+        onClick={(e) => (e.currentTarget.querySelector("input") as HTMLInputElement)?.focus()}
+      >
+        {values.map((v) => (
+          <span key={v} className="chip" style={{ gap: 4 }}>
+            {v}
+            <span
+              style={{ cursor: "pointer", color: "var(--text-faint)" }}
+              onClick={(e) => {
+                e.stopPropagation();
+                onChange(values.filter((x) => x !== v));
+              }}
+            >
+              ✕
+            </span>
+          </span>
+        ))}
+        <input
+          style={{ border: "none", outline: "none", background: "transparent", flex: 1, minWidth: 120, font: "inherit", color: "var(--text)" }}
+          placeholder={values.length === 0 ? "키워드 입력 후 Enter (쉼표로 여러 개 가능)" : ""}
+          value={input}
+          onChange={(e) => {
+            if (e.target.value.includes(",")) add(e.target.value);
+            else setInput(e.target.value);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              add(input);
+            } else if (e.key === "Backspace" && !input && values.length > 0) {
+              onChange(values.slice(0, -1));
+            }
+          }}
+          onPaste={(e) => {
+            e.preventDefault();
+            add(input + e.clipboardData.getData("text"));
+          }}
+          onBlur={() => input.trim() && add(input)}
+        />
+      </div>
+    </label>
+  );
+}
+
 function FiltersCard() {
   const [filters, setFilters] = useState<Filters | null>(null);
-  const [draft, setDraft] = useState({ in_scope: "", exclusion: "", out_scope: "" });
+  const [saved, setSaved] = useState<Filters | null>(null);
   const toast = useToast();
 
   useEffect(() => {
     api.get<Filters>("/api/filters").then((f) => {
       setFilters(f);
-      setDraft({
-        in_scope: f.in_scope_prefixes.join("\n"),
-        exclusion: f.exclusion_keywords.join("\n"),
-        out_scope: f.out_scope_prefixes.join("\n"),
-      });
+      setSaved(f);
     }).catch(() => {});
   }, []);
 
   if (!filters) return null;
 
-  const lines = (s: string) => s.split("\n").map((l) => l.trim()).filter(Boolean);
+  const dirty = JSON.stringify(filters) !== JSON.stringify(saved);
   const save = async () => {
     try {
-      await api.put("/api/filters", {
-        in_scope_prefixes: lines(draft.in_scope),
-        exclusion_keywords: lines(draft.exclusion),
-        out_scope_prefixes: lines(draft.out_scope),
-      });
+      const next = await api.put<Filters>("/api/filters", filters);
+      setFilters(next);
+      setSaved(next);
       toast("수집 필터가 저장되었습니다. 다음 동기화부터 적용됩니다.");
     } catch (e) {
       toast((e as Error).message, true);
@@ -133,28 +201,30 @@ function FiltersCard() {
   return (
     <div className="card">
       <p className="sub" style={{ marginTop: 0 }}>
-        아티클 동기화 시 제목 기준으로 수집 여부를 결정합니다 (한 줄에 하나씩).
-        우선순위: <strong>필수 수집 &gt; 제외</strong>. 파일(<code>backend/article_filters.json</code>)을 직접 수정해도 동일하게 동작합니다.
+        아티클 동기화 시 제목 기준으로 수집 여부를 결정합니다. 키워드는 <strong>Enter 또는 쉼표</strong>로
+        추가하고 (쉼표·줄바꿈 섞인 목록 붙여넣기 가능), 우선순위는 <strong>필수 수집 → 제외</strong> 순입니다.
+        파일(<code>backend/article_filters.json</code>)을 직접 수정해도 동일하게 동작합니다.
       </p>
-      <div className="grid-2" style={{ gridTemplateColumns: "1fr 1fr 1fr" }}>
-        <label className="field">
-          <span>in_scope_prefixes — 이 접두어로 시작하면 반드시 수집</span>
-          <textarea className="textarea mono" value={draft.in_scope}
-            onChange={(e) => setDraft({ ...draft, in_scope: e.target.value })} />
-        </label>
-        <label className="field">
-          <span>exclusion_keywords — 제목에 포함되면 제외</span>
-          <textarea className="textarea mono" value={draft.exclusion}
-            onChange={(e) => setDraft({ ...draft, exclusion: e.target.value })} />
-        </label>
-        <label className="field">
-          <span>out_scope_prefixes — 이 접두어로 시작하면 제외</span>
-          <textarea className="textarea mono" value={draft.out_scope}
-            onChange={(e) => setDraft({ ...draft, out_scope: e.target.value })} />
-        </label>
-      </div>
+      <TagInput
+        label="in_scope_prefixes"
+        hint="이 접두어로 시작하면 반드시 수집 (최우선)"
+        values={filters.in_scope_prefixes}
+        onChange={(v) => setFilters({ ...filters, in_scope_prefixes: v })}
+      />
+      <TagInput
+        label="exclusion_keywords"
+        hint="제목에 포함되면 제외"
+        values={filters.exclusion_keywords}
+        onChange={(v) => setFilters({ ...filters, exclusion_keywords: v })}
+      />
+      <TagInput
+        label="out_scope_prefixes"
+        hint="이 접두어로 시작하면 제외"
+        values={filters.out_scope_prefixes}
+        onChange={(v) => setFilters({ ...filters, out_scope_prefixes: v })}
+      />
       <div className="row" style={{ justifyContent: "flex-end" }}>
-        <button className="btn small" onClick={save}>필터 저장</button>
+        <button className="btn primary small" disabled={!dirty} onClick={save}>필터 저장</button>
       </div>
     </div>
   );

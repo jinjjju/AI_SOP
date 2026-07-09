@@ -27,9 +27,14 @@ def load_filters() -> dict:
 
 
 def save_filters(data: dict) -> dict:
-    cleaned = {
-        key: [s.strip() for s in data.get(key, []) if s and s.strip()] for key in DEFAULT_FILTERS
-    }
+    cleaned = {}
+    for key in DEFAULT_FILTERS:
+        seen = []
+        for s in data.get(key, []):
+            s = (s or "").strip()
+            if s and s not in seen:  # 중복 제거 (입력 순서 유지)
+                seen.append(s)
+        cleaned[key] = seen
     FILTERS_FILE.write_text(json.dumps(cleaned, ensure_ascii=False, indent=2), encoding="utf-8")
     return cleaned
 
