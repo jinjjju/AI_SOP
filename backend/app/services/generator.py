@@ -11,7 +11,7 @@ from fastapi import HTTPException
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from ..models import AiSop, AppSettings, Article, ChangeDetection, PromptTemplate, SopVersion
+from ..models import AiSop, AppSettings, Article, ChangeDetection, LlmUsage, PromptTemplate, SopVersion
 from .audit import log
 from .llm import get_llm_provider
 
@@ -33,6 +33,30 @@ def _get_template(db: Session, template_id: Optional[int], purpose: str) -> Prom
     if template is None:
         raise HTTPException(500, f"'{purpose}' 프롬프트 템플릿이 없습니다. 설정을 확인하세요.")
     return template
+
+
+def _call_llm(
+    db: Session,
+    actor: str,
+    purpose: str,
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    sop_id: Optional[int] = None,
+) -> str:
+    """LLM 호출 + 토큰 사용량 기록 (커밋은 호출부 트랜잭션에 묶임)."""
+    result = get_llm_provider().generate(model, system_prompt, user_prompt)
+    db.add(
+        LlmUsage(
+            actor=actor,
+            purpose=purpose,
+            model=model,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            sop_id=sop_id,
+        )
+    )
+    return result.text
 
 
 def next_version(db: Session, sop_id: int) -> int:
@@ -98,7 +122,7 @@ def generate_new_sop(
         scope=scope,
         articles=_format_articles(articles),
     )
-    content = get_llm_provider().generate(settings.default_model, template.system_prompt, user_prompt)
+    content = _call_llm(db, actor, "generate", settings.default_model, template.system_prompt, user_prompt)
 
     sop = AiSop(
         title=_extract_title(content, scope),
@@ -140,7 +164,9 @@ def regenerate_sop(db: Session, sop: AiSop, article_ids: list[int], actor: str =
         scope=sop.target_scope,
         articles=_format_articles(articles),
     )
-    content = get_llm_provider().generate(settings.default_model, template.system_prompt, user_prompt)
+    content = _call_llm(
+        db, actor, "regenerate", settings.default_model, template.system_prompt, user_prompt, sop.id
+    )
 
     sop.articles = articles
     sop.content = content
@@ -176,7 +202,9 @@ def create_revision_draft(
         current_sop=sop.content,
         articles=_format_articles([change.article]) + f"\n\n[변경 diff]\n{change.diff_summary}",
     )
-    content = get_llm_provider().generate(settings.default_model, template.system_prompt, user_prompt)
+    content = _call_llm(
+        db, actor, "revise", settings.default_model, template.system_prompt, user_prompt, sop.id
+    )
 
     version = SopVersion(
         sop_id=sop.id,
@@ -200,14 +228,15 @@ def create_revision_draft(
     return version
 
 
-def test_sop(db: Session, sop: AiSop, question: str) -> dict:
+def test_sop(db: Session, sop: AiSop, question: str, actor: str = "") -> dict:
     """SOP를 시스템 프롬프트로 넣고 고객 질문을 시뮬레이션."""
     settings = get_settings(db)
     system_prompt = (
         "너는 고객센터 AI 챗봇이다. 아래 AI SOP에 정의된 절차와 안내 문구만 근거로 답변한다. "
         "SOP에 없는 정책은 안내하지 말고 상담사 연결을 권한다.\n\n[AI SOP]\n" + sop.content
     )
-    answer = get_llm_provider().generate(
-        settings.default_model, system_prompt, f"[고객 질문]\n{question}"
+    answer = _call_llm(
+        db, actor, "test", settings.default_model, system_prompt, f"[고객 질문]\n{question}", sop.id
     )
+    db.commit()
     return {"question": question, "answer": answer, "model_used": settings.default_model}

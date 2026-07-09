@@ -13,7 +13,14 @@ from pathlib import Path
 
 from app import config
 from app.database import Base, SessionLocal, engine
-from app.models import AiSop, AppSettings, Article, PromptTemplate, SopVersion
+from app.models import AiSop, AppSettings, Article, ModelPrice, PromptTemplate, SopVersion
+
+# 기본 단가 (USD / 100만 토큰) — https://ai.google.dev/gemini-api/docs/pricing 기준 (2026-07 확인)
+# gemini-3.5-flash-pro는 가격 페이지에 미게재라 3.1-pro-preview 단가를 임시 적용 → 어드민에서 수정
+DEFAULT_PRICES = {
+    "gemini-3.5-flash": (1.50, 9.00),
+    "gemini-3.5-flash-pro": (2.00, 12.00),
+}
 from app.services.detector import sync_articles
 from app.services.zendesk import OVERRIDES_FILE
 
@@ -124,6 +131,12 @@ def seed():
                 )
             )
             print("기본 프롬프트 템플릿 2개 + 설정 생성")
+
+        if db.query(ModelPrice).count() == 0:
+            for model in config.AVAILABLE_MODELS:
+                inp, out = DEFAULT_PRICES.get(model, (0.0, 0.0))
+                db.add(ModelPrice(model=model, input_per_1m=inp, output_per_1m=out))
+            print(f"모델 단가 시드: {DEFAULT_PRICES}")
 
         # 담당자는 시드하지 않는다 — 첫 접속 시 닉네임/팀명으로 직접 가입
 

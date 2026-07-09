@@ -4,13 +4,26 @@
 모델 목록은 config.AVAILABLE_MODELS (gemini-3.5-flash / gemini-3.5-flash-pro).
 """
 import difflib
+from dataclasses import dataclass
 from typing import Protocol
 
 from .. import config
 
 
+@dataclass
+class LLMResult:
+    text: str
+    input_tokens: int
+    output_tokens: int
+
+
+def _estimate_tokens(text: str) -> int:
+    """mock용 대략치: 한국어 기준 ~2.5자/토큰."""
+    return max(1, int(len(text) / 2.5))
+
+
 class LLMProvider(Protocol):
-    def generate(self, model: str, system_prompt: str, user_prompt: str) -> str:
+    def generate(self, model: str, system_prompt: str, user_prompt: str) -> LLMResult:
         ...
 
 
@@ -47,7 +60,15 @@ class MockLLMProvider:
         summary = " / ".join(changes) if changes else "참조 아티클 변경사항 검토 후 반영 필요"
         return f"> [개정 요약] {summary} — {model} (mock) 생성 초안, 담당자 검토 필요\n\n{revised}"
 
-    def generate(self, model: str, system_prompt: str, user_prompt: str) -> str:
+    def generate(self, model: str, system_prompt: str, user_prompt: str) -> LLMResult:
+        text = self._generate_text(model, system_prompt, user_prompt)
+        return LLMResult(
+            text=text,
+            input_tokens=_estimate_tokens(system_prompt + user_prompt),
+            output_tokens=_estimate_tokens(text),
+        )
+
+    def _generate_text(self, model: str, system_prompt: str, user_prompt: str) -> str:
         if "[기존 AI SOP]" in user_prompt:
             return self._mock_revise(model, user_prompt)
         if "[고객 질문]" in user_prompt:
@@ -104,7 +125,7 @@ class GeminiProvider:
 
         self._client = genai.Client(api_key=config.GEMINI_API_KEY)
 
-    def generate(self, model: str, system_prompt: str, user_prompt: str) -> str:
+    def generate(self, model: str, system_prompt: str, user_prompt: str) -> LLMResult:
         from google.genai import types
 
         resp = self._client.models.generate_content(
@@ -112,7 +133,12 @@ class GeminiProvider:
             contents=user_prompt,
             config=types.GenerateContentConfig(system_instruction=system_prompt or None),
         )
-        return resp.text or ""
+        usage = getattr(resp, "usage_metadata", None)
+        return LLMResult(
+            text=resp.text or "",
+            input_tokens=getattr(usage, "prompt_token_count", 0) or 0,
+            output_tokens=getattr(usage, "candidates_token_count", 0) or 0,
+        )
 
 
 def get_llm_provider() -> LLMProvider:

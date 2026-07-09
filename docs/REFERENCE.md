@@ -70,6 +70,24 @@ erDiagram
         string default_model
         int default_generate_template_id FK
         int default_revise_template_id FK
+        float usd_krw "원화 환산 환율 (기본 1400)"
+        float weekly_budget_usd "주간 예산 (기본 10)"
+    }
+    model_prices {
+        int id PK
+        string model UK
+        float input_per_1m "USD/100만 입력 토큰"
+        float output_per_1m "USD/100만 출력 토큰"
+    }
+    llm_usage {
+        int id PK
+        string actor
+        string purpose "generate | revise | regenerate | test"
+        string model
+        int input_tokens
+        int output_tokens
+        int sop_id "nullable"
+        datetime created_at
     }
     managers {
         int id PK
@@ -100,7 +118,16 @@ erDiagram
 ### activity_logs.action 코드
 
 `sop_created` `sop_regenerated` `draft_created` `version_applied` `version_rejected`
-`status_changed` `content_edited` `change_dismissed` `sync_run` `settings_updated` `prompt_updated` `member_joined`
+`status_changed` `content_edited` `change_dismissed` `sync_run` `settings_updated` `prompt_updated` `member_joined` `price_updated`
+
+### LLM 비용 계산 규칙
+
+- `llm_usage`에는 **토큰 수만 저장**하고 금액은 저장하지 않는다. 비용은 조회 시점에
+  `input_tokens/1M × input_per_1m + output_tokens/1M × output_per_1m`로 계산 →
+  **어드민에서 단가를 수정하면 과거 사용분 표시 금액에도 자동 반영**된다.
+- 원화는 `app_settings.usd_krw` 환율로 환산(기본 1,400).
+- 주간(최근 7일 rolling) 사용액이 `weekly_budget_usd`(기본 $10)를 넘으면 `over_budget=true` → UI 상단에 노티.
+- 토큰 수 출처: Gemini는 `usage_metadata`(prompt/candidates token count), mock은 글자 수 기반 추정치.
 
 ## 2. 프롬프트 템플릿 계약
 
@@ -166,12 +193,21 @@ Base URL: `http://localhost:8000`. 🔒 = `require_manager` (가입 필요).
 | PATCH 🔒 | `/api/sops/{id}/versions/{v}` | `{content}` — pending 초안 수정 | `SopVersion` |
 | POST | `/api/sops/{id}/test` | `{question}` | `{question, answer, model_used}` — SOP를 시스템 프롬프트로 챗봇 시뮬레이션 |
 
+### 사용량/비용
+
+| Method | Path | 요청 | 응답 |
+|---|---|---|---|
+| GET | `/api/usage` | | `UsageSummary` — 전체/주간 USD·KRW, `by_actor`(담당자별), `by_model`, `recent`(최근 20건), `over_budget` |
+| GET | `/api/usage/status` | | `{week_usd, weekly_budget_usd, over_budget}` — 상단 노티용 경량 조회 |
+| GET | `/api/prices` | | `ModelPrice[]` |
+| PUT | `/api/prices/{model}` | `{input_per_1m, output_per_1m}` (USD/100만 토큰) | `ModelPrice` — 이후 모든 비용 표시에 즉시 반영 |
+
 ### 설정
 
 | Method | Path | 요청 | 응답 |
 |---|---|---|---|
 | GET | `/api/models` | | `{models: string[], use_mock: bool}` |
-| GET / PUT | `/api/settings` | PUT: `{default_model?, default_generate_template_id?, default_revise_template_id?}` | `Settings` |
+| GET / PUT | `/api/settings` | PUT: `{default_model?, default_generate_template_id?, default_revise_template_id?, usd_krw?, weekly_budget_usd?}` | `Settings` |
 | GET / POST | `/api/prompts` | POST: `{name, purpose, system_prompt, user_prompt_template}` | `PromptTemplate` |
 | PUT | `/api/prompts/{id}` | 위와 동일 | `PromptTemplate` |
 

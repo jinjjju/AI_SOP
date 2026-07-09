@@ -62,6 +62,47 @@ export interface AppSettings {
   default_model: string;
   default_generate_template_id: number | null;
   default_revise_template_id: number | null;
+  usd_krw: number;
+  weekly_budget_usd: number;
+}
+
+export interface ModelPrice {
+  model: string;
+  input_per_1m: number;
+  output_per_1m: number;
+}
+
+export interface UsageRow {
+  actor: string;
+  calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  usd: number;
+  krw: number;
+  week_usd: number;
+}
+
+export interface UsageSummary {
+  total_usd: number;
+  total_krw: number;
+  week_usd: number;
+  week_krw: number;
+  weekly_budget_usd: number;
+  over_budget: boolean;
+  usd_krw: number;
+  by_actor: UsageRow[];
+  by_model: { model: string; calls: number; input_tokens: number; output_tokens: number; usd: number; krw: number }[];
+  recent: {
+    id: number; actor: string; purpose: string; model: string;
+    input_tokens: number; output_tokens: number; usd: number;
+    sop_id: number | null; created_at: string;
+  }[];
+}
+
+export interface BudgetStatus {
+  week_usd: number;
+  weekly_budget_usd: number;
+  over_budget: boolean;
 }
 
 export interface ModelsInfo {

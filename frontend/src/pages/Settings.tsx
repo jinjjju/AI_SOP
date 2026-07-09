@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
 import { Spinner, useToast } from "../components/ui";
-import type { AppSettings, Manager, ModelsInfo, PromptTemplate } from "../types";
+import type { AppSettings, Manager, ModelPrice, ModelsInfo, PromptTemplate, UsageSummary } from "../types";
+
+const usd = (v: number) => `$${v.toFixed(v >= 1 ? 2 : 4)}`;
+const krw = (v: number) => `₩${Math.round(v).toLocaleString("ko-KR")}`;
 
 export default function Settings() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -78,6 +81,9 @@ export default function Settings() {
         </div>
       </div>
 
+      <div className="section-title">LLM 사용량 · 비용</div>
+      <UsageCard />
+
       <ManagerCard />
 
       <div className="section-title">프롬프트 템플릿</div>
@@ -85,6 +91,153 @@ export default function Settings() {
         <TemplateEditor key={t.id} template={t} onSaved={load} />
       ))}
       <NewTemplate onSaved={load} />
+    </div>
+  );
+}
+
+function UsageCard() {
+  const [usage, setUsage] = useState<UsageSummary | null>(null);
+  const [prices, setPrices] = useState<ModelPrice[]>([]);
+  const [usdKrw, setUsdKrw] = useState("");
+  const [budget, setBudget] = useState("");
+  const toast = useToast();
+
+  const load = useCallback(() => {
+    api.get<UsageSummary>("/api/usage").then((u) => {
+      setUsage(u);
+      setUsdKrw(String(u.usd_krw));
+      setBudget(String(u.weekly_budget_usd));
+    }).catch(() => {});
+    api.get<ModelPrice[]>("/api/prices").then(setPrices).catch(() => {});
+  }, []);
+  useEffect(load, [load]);
+
+  if (!usage) return null;
+
+  const saveMoney = async () => {
+    try {
+      await api.put("/api/settings", { usd_krw: Number(usdKrw), weekly_budget_usd: Number(budget) });
+      toast("환율/예산이 저장되었습니다.");
+      load();
+    } catch (e) {
+      toast((e as Error).message, true);
+    }
+  };
+
+  return (
+    <>
+      {usage.over_budget && (
+        <div className="card" style={{ borderColor: "var(--red)", background: "var(--red-bg)", marginBottom: 16 }}>
+          ⚠ <strong>주간 예산 초과</strong> — 최근 7일 사용액 {usd(usage.week_usd)}이
+          설정된 예산 {usd(usage.weekly_budget_usd)}을 넘었습니다.
+        </div>
+      )}
+
+      <div className="grid-cards" style={{ marginBottom: 16 }}>
+        <div className="stat">
+          <div className="num" style={{ color: usage.over_budget ? "var(--red)" : undefined }}>
+            {usd(usage.week_usd)}
+          </div>
+          <div className="label">최근 7일 사용액 ({krw(usage.week_krw)}) / 예산 {usd(usage.weekly_budget_usd)}</div>
+        </div>
+        <div className="stat">
+          <div className="num">{usd(usage.total_usd)}</div>
+          <div className="label">전체 누적 ({krw(usage.total_krw)})</div>
+        </div>
+      </div>
+
+      <div className="card">
+        <h3>담당자별 사용량</h3>
+        {usage.by_actor.length === 0 ? (
+          <p className="sub">아직 LLM 호출 기록이 없습니다.</p>
+        ) : (
+          <table style={{ width: "100%", fontSize: 13, borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ color: "var(--text-dim)", textAlign: "left" }}>
+                <th style={{ padding: "6px 4px" }}>담당자</th>
+                <th>호출</th>
+                <th>입력 토큰</th>
+                <th>출력 토큰</th>
+                <th>최근 7일</th>
+                <th>누적 (USD)</th>
+                <th>누적 (KRW)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {usage.by_actor.map((r) => (
+                <tr key={r.actor} style={{ borderTop: "1px solid var(--border)" }}>
+                  <td style={{ padding: "7px 4px", fontWeight: 500 }}>👤 {r.actor}</td>
+                  <td>{r.calls}</td>
+                  <td>{r.input_tokens.toLocaleString()}</td>
+                  <td>{r.output_tokens.toLocaleString()}</td>
+                  <td>{usd(r.week_usd)}</td>
+                  <td>{usd(r.usd)}</td>
+                  <td>{krw(r.krw)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {usage.by_model.length > 0 && (
+          <p className="sub" style={{ marginBottom: 0 }}>
+            모델별: {usage.by_model.map((m) => `${m.model} ${m.calls}회 · ${usd(m.usd)}`).join("  |  ")}
+          </p>
+        )}
+      </div>
+
+      <div className="card">
+        <h3>모델 단가 · 환율 · 예산</h3>
+        <p className="sub" style={{ marginTop: 0 }}>
+          단가(USD/100만 토큰)를 수정하면 과거 사용분을 포함한 모든 비용 표시에 즉시 반영됩니다.
+          출처: <a href="https://ai.google.dev/gemini-api/docs/pricing?hl=ko" target="_blank" rel="noreferrer" style={{ color: "var(--accent-strong)" }}>Gemini API 가격</a>
+        </p>
+        {prices.map((p) => (
+          <PriceRow key={p.model} price={p} onSaved={load} />
+        ))}
+        <div className="row wrap" style={{ marginTop: 14, alignItems: "flex-end" }}>
+          <label className="field" style={{ marginBottom: 0, width: 160 }}>
+            <span>환율 (₩ / $1)</span>
+            <input className="input" type="number" value={usdKrw} onChange={(e) => setUsdKrw(e.target.value)} />
+          </label>
+          <label className="field" style={{ marginBottom: 0, width: 180 }}>
+            <span>주간 예산 (USD, 초과 시 노티)</span>
+            <input className="input" type="number" step="0.5" value={budget} onChange={(e) => setBudget(e.target.value)} />
+          </label>
+          <button className="btn small" onClick={saveMoney}>저장</button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function PriceRow({ price, onSaved }: { price: ModelPrice; onSaved: () => void }) {
+  const [inp, setInp] = useState(String(price.input_per_1m));
+  const [out, setOut] = useState(String(price.output_per_1m));
+  const toast = useToast();
+  const dirty = Number(inp) !== price.input_per_1m || Number(out) !== price.output_per_1m;
+
+  const save = async () => {
+    try {
+      await api.put(`/api/prices/${price.model}`, { input_per_1m: Number(inp), output_per_1m: Number(out) });
+      toast(`'${price.model}' 단가가 저장되었습니다. 모든 비용 계산에 반영됩니다.`);
+      onSaved();
+    } catch (e) {
+      toast((e as Error).message, true);
+    }
+  };
+
+  return (
+    <div className="row wrap" style={{ padding: "6px 0", alignItems: "flex-end" }}>
+      <span className="chip accent" style={{ minWidth: 180, justifyContent: "center" }}>{price.model}</span>
+      <label className="field" style={{ marginBottom: 0, width: 150 }}>
+        <span>입력 $/1M</span>
+        <input className="input" type="number" step="0.01" value={inp} onChange={(e) => setInp(e.target.value)} />
+      </label>
+      <label className="field" style={{ marginBottom: 0, width: 150 }}>
+        <span>출력 $/1M</span>
+        <input className="input" type="number" step="0.01" value={out} onChange={(e) => setOut(e.target.value)} />
+      </label>
+      <button className="btn small" disabled={!dirty} onClick={save}>저장</button>
     </div>
   );
 }

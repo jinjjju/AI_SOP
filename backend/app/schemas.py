@@ -90,12 +90,58 @@ class SettingsOut(BaseModel):
     default_model: str
     default_generate_template_id: Optional[int]
     default_revise_template_id: Optional[int]
+    usd_krw: float
+    weekly_budget_usd: float
 
 
 class SettingsIn(BaseModel):
     default_model: Optional[str] = None
     default_generate_template_id: Optional[int] = None
     default_revise_template_id: Optional[int] = None
+    usd_krw: Optional[float] = None
+    weekly_budget_usd: Optional[float] = None
+
+
+class ModelPriceOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    model: str
+    input_per_1m: float
+    output_per_1m: float
+
+
+class ModelPriceIn(BaseModel):
+    input_per_1m: float
+    output_per_1m: float
+
+
+class UsageRow(BaseModel):
+    actor: str
+    calls: int
+    input_tokens: int
+    output_tokens: int
+    usd: float
+    krw: float
+    week_usd: float
+
+
+class UsageSummary(BaseModel):
+    total_usd: float
+    total_krw: float
+    week_usd: float
+    week_krw: float
+    weekly_budget_usd: float
+    over_budget: bool
+    usd_krw: float
+    by_actor: list[UsageRow]
+    by_model: list[dict]
+    recent: list[dict]
+
+
+class BudgetStatus(BaseModel):
+    week_usd: float
+    weekly_budget_usd: float
+    over_budget: bool
 
 
 class GenerateIn(BaseModel):

@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Table, Text
+from sqlalchemy import Column, DateTime, Float, ForeignKey, Integer, String, Table, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -71,6 +71,36 @@ class AppSettings(Base):
     default_revise_template_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("prompt_templates.id"), nullable=True
     )
+    usd_krw: Mapped[float] = mapped_column(Float, default=1400.0)  # 원화 환산 환율
+    weekly_budget_usd: Mapped[float] = mapped_column(Float, default=10.0)  # 주간(최근 7일) 예산
+
+
+class ModelPrice(Base):
+    """모델별 단가 (USD / 100만 토큰). 어드민에서 수정하면 비용 계산에 즉시 반영된다."""
+
+    __tablename__ = "model_prices"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    model: Mapped[str] = mapped_column(String(100), unique=True)
+    input_per_1m: Mapped[float] = mapped_column(Float, default=0.0)
+    output_per_1m: Mapped[float] = mapped_column(Float, default=0.0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class LlmUsage(Base):
+    """LLM 호출 1건당 토큰 사용 기록. 비용은 저장하지 않고 조회 시점의 단가로 계산한다
+    (단가를 수정하면 과거 표시 금액에도 자동 반영)."""
+
+    __tablename__ = "llm_usage"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    actor: Mapped[str] = mapped_column(String(100), default="")
+    purpose: Mapped[str] = mapped_column(String(20), default="")  # generate/revise/regenerate/test
+    model: Mapped[str] = mapped_column(String(100), default="")
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    sop_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class Manager(Base):

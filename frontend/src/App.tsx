@@ -3,7 +3,7 @@ import { NavLink, Route, Routes, useLocation } from "react-router-dom";
 import { api, clearUser, getUser, setUser } from "./api/client";
 import type { CurrentUser } from "./api/client";
 import { Spinner, useToast } from "./components/ui";
-import type { Manager, ModelsInfo } from "./types";
+import type { BudgetStatus, Manager, ModelsInfo } from "./types";
 import Dashboard from "./pages/Dashboard";
 import ChangeDetail from "./pages/ChangeDetail";
 import SopGenerate from "./pages/SopGenerate";
@@ -99,11 +99,17 @@ function JoinScreen({ onJoined }: { onJoined: (u: CurrentUser) => void }) {
 export default function App() {
   const { pathname } = useLocation();
   const [info, setInfo] = useState<ModelsInfo | null>(null);
+  const [budget, setBudget] = useState<BudgetStatus | null>(null);
   const [user, setUserState] = useState<CurrentUser | null>(getUser());
 
   useEffect(() => {
     api.get<ModelsInfo>("/api/models").then(setInfo).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    // 페이지 이동마다 주간 예산 상태 갱신 (초과 시 상단 노티)
+    api.get<BudgetStatus>("/api/usage/status").then(setBudget).catch(() => {});
+  }, [pathname]);
 
   if (!user) return <JoinScreen onJoined={setUserState} />;
 
@@ -139,6 +145,11 @@ export default function App() {
         <header className="topbar">
           <h1>{title}</h1>
           <div className="topbar-meta">
+            {budget?.over_budget && (
+              <NavLink to="/settings" className="chip red" title="설정에서 사용량 상세 확인">
+                ⚠ 주간 예산 초과 ${budget.week_usd.toFixed(2)} / ${budget.weekly_budget_usd}
+              </NavLink>
+            )}
             {info?.use_mock && <span className="chip yellow">MOCK</span>}
             {info && <span className="chip">{info.models[0]} 외 {info.models.length - 1}종</span>}
             <span className="chip accent" title="현재 담당자 — 모든 작업이 이 이름으로 기록됩니다">

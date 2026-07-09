@@ -33,6 +33,12 @@ def update_settings(body: schemas.SettingsIn, db: Session = Depends(get_db), act
             if db.get(PromptTemplate, value) is None:
                 raise HTTPException(400, f"존재하지 않는 템플릿 ID: {value}")
             setattr(settings, field, value)
+    for field in ("usd_krw", "weekly_budget_usd"):
+        value = getattr(body, field)
+        if value is not None:
+            if value <= 0:
+                raise HTTPException(400, f"{field}는 0보다 커야 합니다.")
+            setattr(settings, field, value)
     log(db, actor, "settings_updated", "settings", None, f"기본 생성 설정 변경 (모델: {settings.default_model})")
     db.commit()
     db.refresh(settings)

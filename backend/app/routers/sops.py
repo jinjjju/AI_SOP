@@ -202,8 +202,8 @@ def edit_pending_version(
 
 
 @router.post("/{sop_id}/test", response_model=schemas.TestOut)
-def test(sop_id: int, body: schemas.TestIn, db: Session = Depends(get_db)):
+def test(sop_id: int, body: schemas.TestIn, db: Session = Depends(get_db), actor: str = Depends(require_manager)):
     sop = _get_sop(db, sop_id)
     if not body.question.strip():
         raise HTTPException(400, "질문을 입력하세요.")
-    return generator.test_sop(db, sop, body.question.strip())
+    return generator.test_sop(db, sop, body.question.strip(), actor)
