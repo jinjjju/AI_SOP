@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
-import { Spinner, useToast } from "../components/ui";
-import type { AppSettings, Filters, Manager, ModelPrice, ModelsInfo, PromptTemplate, UsageSummary } from "../types";
+import { Spinner, fmtDate, useToast } from "../components/ui";
+import type { AppSettings, Filters, Manager, ModelPrice, ModelsInfo, PromptTemplate, Quality, UsageSummary, ZendeskUsage } from "../types";
 
 const usd = (v: number) => `$${v.toFixed(v >= 1 ? 2 : 4)}`;
 const krw = (v: number) => `₩${Math.round(v).toLocaleString("ko-KR")}`;
@@ -41,13 +41,25 @@ export default function Settings() {
         <p className="sub" style={{ marginTop: 0 }}>
           SOP 생성 화면에서는 담당자가 스코프만 입력하며, 아래 기본값이 자동으로 적용됩니다.
         </p>
-        <div className="grid-2" style={{ gridTemplateColumns: "1fr 1fr 1fr" }}>
+        <div className="grid-2" style={{ gridTemplateColumns: "1fr 1fr 1fr 1fr" }}>
           <label className="field">
-            <span>기본 모델</span>
+            <span>기본 모델 (생성·보완·검증·번역)</span>
             <select
               className="select"
               value={settings.default_model}
               onChange={(e) => update({ default_model: e.target.value })}
+            >
+              {models.map((m) => (
+                <option key={m} value={m}>{m}</option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>경량 모델 (판정·테스트)</span>
+            <select
+              className="select"
+              value={settings.light_model}
+              onChange={(e) => update({ light_model: e.target.value })}
             >
               {models.map((m) => (
                 <option key={m} value={m}>{m}</option>
@@ -81,8 +93,14 @@ export default function Settings() {
         </div>
       </div>
 
+      <div className="section-title">Zendesk 동기화 · 호출 한도</div>
+      <SyncCard settings={settings} onUpdate={update} />
+
       <div className="section-title">아티클 수집 필터 (article_filters.json)</div>
       <FiltersCard />
+
+      <div className="section-title">LLM 품질 지표</div>
+      <QualityCard />
 
       <div className="section-title">LLM 사용량 · 비용</div>
       <UsageCard />
@@ -94,6 +112,77 @@ export default function Settings() {
         <TemplateEditor key={t.id} template={t} onSaved={load} />
       ))}
       <NewTemplate onSaved={load} />
+    </div>
+  );
+}
+
+/* Zendesk 동기화 · 자체 호출 상한 — 초기 테스트 기간엔 상한을 수시로 조정할 수 있다 */
+function SyncCard({ settings, onUpdate }: { settings: AppSettings; onUpdate: (p: Partial<AppSettings>) => void }) {
+  const [usage, setUsage] = useState<ZendeskUsage | null>(null);
+  const [limit, setLimit] = useState(String(settings.zendesk_daily_call_limit));
+  const [hour, setHour] = useState(String(settings.sync_hour));
+
+  useEffect(() => {
+    api.get<ZendeskUsage>("/api/zendesk-usage").then(setUsage).catch(() => {});
+  }, [settings.zendesk_daily_call_limit]);
+
+  return (
+    <div className="card">
+      <div className="row wrap" style={{ gap: 10, marginBottom: 12 }}>
+        {usage && (
+          <span className={`chip ${usage.calls >= usage.limit ? "red" : "green"}`}>
+            오늘 API 호출 {usage.calls} / {usage.limit}
+          </span>
+        )}
+        {settings.last_sync_at && <span className="chip">마지막 동기화 {fmtDate(settings.last_sync_at)}</span>}
+      </div>
+      <p className="sub" style={{ marginTop: 0 }}>
+        상한은 CS 시스템 보호를 위한 <strong>자체 안전장치</strong>입니다 (Zendesk 자체 제한과 별개).
+        상한 도달 시 동기화가 중단되고, 다음 날 카운터가 리셋됩니다.
+        인크리멘털 동기화는 1회당 1~2 호출이라 평소엔 여유가 큽니다.
+      </p>
+      <div className="row wrap" style={{ alignItems: "flex-end" }}>
+        <label className="field" style={{ marginBottom: 0, width: 180 }}>
+          <span>일일 호출 상한</span>
+          <input className="input" type="number" min={1} value={limit} onChange={(e) => setLimit(e.target.value)} />
+        </label>
+        <button
+          className="btn small"
+          disabled={Number(limit) === settings.zendesk_daily_call_limit || Number(limit) <= 0}
+          onClick={() => onUpdate({ zendesk_daily_call_limit: Number(limit) })}
+        >
+          저장
+        </button>
+        <span style={{ width: 18 }} />
+        <label className="row" style={{ gap: 6, paddingBottom: 8, cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            checked={settings.auto_draft_on_sync}
+            onChange={(e) => onUpdate({ auto_draft_on_sync: e.target.checked })}
+          />
+          <span style={{ fontSize: 13 }}>동기화 시 발행 SOP 보완 초안 자동 생성</span>
+        </label>
+        <span style={{ width: 18 }} />
+        <label className="row" style={{ gap: 6, paddingBottom: 8, cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            checked={settings.auto_sync_enabled}
+            onChange={(e) => onUpdate({ auto_sync_enabled: e.target.checked })}
+          />
+          <span style={{ fontSize: 13 }}>매일 자동 동기화 (백엔드 상시 구동 시)</span>
+        </label>
+        <label className="field" style={{ marginBottom: 0, width: 110 }}>
+          <span>실행 시각 (시)</span>
+          <input className="input" type="number" min={0} max={23} value={hour} onChange={(e) => setHour(e.target.value)} />
+        </label>
+        <button
+          className="btn small"
+          disabled={Number(hour) === settings.sync_hour || Number(hour) < 0 || Number(hour) > 23}
+          onClick={() => onUpdate({ sync_hour: Number(hour) })}
+        >
+          저장
+        </button>
+      </div>
     </div>
   );
 }
@@ -226,6 +315,52 @@ function FiltersCard() {
       <div className="row" style={{ justifyContent: "flex-end" }}>
         <button className="btn primary small" disabled={!dirty} onClick={save}>필터 저장</button>
       </div>
+    </div>
+  );
+}
+
+/* LLM 정확도 실측 — 무수정 승인율(수정 없이 승인된 초안 비율)이 실전 정확도의 대리 지표.
+   목표 95% 미달이면 프롬프트/모델/골든 질문을 조정하는 운영 루프의 근거가 된다 */
+function QualityCard() {
+  const [q, setQ] = useState<Quality | null>(null);
+
+  useEffect(() => {
+    api.get<Quality>("/api/quality").then(setQ).catch(() => {});
+  }, []);
+
+  if (!q) return null;
+
+  const rate = q.clean_apply_rate;
+  const pct = rate === null ? null : Math.round(rate * 1000) / 10;
+  const ok = rate !== null && rate >= q.target_rate;
+
+  return (
+    <div className="card">
+      <div className="grid-cards" style={{ marginBottom: 10 }}>
+        <div className="stat">
+          <div className="num" style={{ color: pct === null ? undefined : ok ? "var(--green)" : "var(--red)" }}>
+            {pct === null ? "—" : `${pct}%`}
+          </div>
+          <div className="label">무수정 승인율 (목표 {Math.round(q.target_rate * 100)}%+) · 결정 {q.applied + q.rejected}건 기준</div>
+        </div>
+        <div className="stat">
+          <div className="num">{q.applied}<span style={{ fontSize: 14, color: "var(--text-faint)" }}> / 거절 {q.rejected}</span></div>
+          <div className="label">승인된 보완 초안 (무수정 {q.clean_applied}건)</div>
+        </div>
+        <div className="stat">
+          <div className="num" style={{ color: q.warned ? "var(--yellow)" : undefined }}>{q.warned}<span style={{ fontSize: 14, color: "var(--text-faint)" }}> / {q.verified}</span></div>
+          <div className="label">근거 경고가 나온 초안 / 검증 실행</div>
+        </div>
+        <div className="stat">
+          <div className="num" style={{ color: q.test_failed ? "var(--yellow)" : undefined }}>{q.test_failed}<span style={{ fontSize: 14, color: "var(--text-faint)" }}> / {q.tested}</span></div>
+          <div className="label">골든 테스트 실패 초안 / 실행</div>
+        </div>
+      </div>
+      <p className="sub" style={{ margin: 0 }}>
+        <strong>무수정 승인율</strong>은 담당자가 손대지 않고 그대로 승인한 초안의 비율로, LLM 실전 정확도의
+        대리 지표입니다. 목표(95%) 미달이 지속되면: ① 기본 모델 상향 ② 해당 프롬프트 보강 ③ 골든 질문 확충
+        순으로 조정하세요. 표본이 쌓여야 의미가 있습니다.
+      </p>
     </div>
   );
 }
@@ -447,13 +582,22 @@ function TemplateEditor({ template, onSaved }: { template: PromptTemplate; onSav
     }
   };
 
+  const PURPOSE: Record<string, { icon: string; label: string }> = {
+    generate: { icon: "✦", label: "신규 생성용" },
+    revise: { icon: "♺", label: "보완용" },
+    triage: { icon: "⚖", label: "판단용(링크 검수)" },
+    auto_triage: { icon: "⚖", label: "자동 분류용(신규 아티클)" },
+    verify: { icon: "🔍", label: "근거 검증용" },
+    golden_test: { icon: "✓", label: "골든 테스트용" },
+    translate: { icon: "🌐", label: "영문 번역용" },
+  };
+  const p = PURPOSE[template.purpose] ?? { icon: "✦", label: template.purpose };
+
   return (
     <details className="article-acc">
       <summary>
-        {template.purpose === "generate" ? "✦" : template.purpose === "revise" ? "♺" : "⚖"} {template.name}
-        <span className="chip" style={{ marginLeft: "auto" }}>
-          {template.purpose === "generate" ? "신규 생성용" : template.purpose === "revise" ? "보완용" : "판단용(링크 검수)"}
-        </span>
+        {p.icon} {template.name}
+        <span className="chip" style={{ marginLeft: "auto" }}>{p.label}</span>
       </summary>
       <div style={{ padding: "4px 14px 14px" }}>
         <TemplateFields form={form} setForm={setForm} />

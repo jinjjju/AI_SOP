@@ -22,3 +22,8 @@ ZENDESK_SUBDOMAIN = os.getenv("ZENDESK_SUBDOMAIN", "")
 ZENDESK_EMAIL = os.getenv("ZENDESK_EMAIL", "")
 ZENDESK_API_TOKEN = os.getenv("ZENDESK_API_TOKEN", "")
 ZENDESK_LOCALE = os.getenv("ZENDESK_LOCALE", "ko")
+
+# Slack 알림 (Incoming Webhook 또는 Workflow Builder 웹훅 URL — 비우면 알림 생략)
+SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL", "")
+# 알림 메시지에 넣을 어드민 접속 주소 (아티클/SOP 내용은 싣지 않고 건수+링크만 발송)
+ADMIN_BASE_URL = os.getenv("ADMIN_BASE_URL", "http://localhost:5173")

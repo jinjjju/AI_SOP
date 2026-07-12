@@ -24,22 +24,32 @@ def read_settings(db: Session = Depends(get_db)):
 @router.put("/settings", response_model=schemas.SettingsOut)
 def update_settings(body: schemas.SettingsIn, db: Session = Depends(get_db), actor: str = Depends(get_actor)):
     settings = get_settings(db)
-    if body.default_model is not None:
-        if body.default_model not in config.AVAILABLE_MODELS:
-            raise HTTPException(400, f"허용되지 않는 모델입니다: {body.default_model}")
-        settings.default_model = body.default_model
+    for field in ("default_model", "light_model"):
+        value = getattr(body, field)
+        if value is not None:
+            if value not in config.AVAILABLE_MODELS:
+                raise HTTPException(400, f"허용되지 않는 모델입니다: {value}")
+            setattr(settings, field, value)
     for field in ("default_generate_template_id", "default_revise_template_id"):
         value = getattr(body, field)
         if value is not None:
             if db.get(PromptTemplate, value) is None:
                 raise HTTPException(400, f"존재하지 않는 템플릿 ID: {value}")
             setattr(settings, field, value)
-    for field in ("usd_krw", "weekly_budget_usd"):
+    for field in ("usd_krw", "weekly_budget_usd", "zendesk_daily_call_limit"):
         value = getattr(body, field)
         if value is not None:
             if value <= 0:
                 raise HTTPException(400, f"{field}는 0보다 커야 합니다.")
             setattr(settings, field, value)
+    if body.sync_hour is not None:
+        if not (0 <= body.sync_hour <= 23):
+            raise HTTPException(400, "sync_hour는 0~23 사이여야 합니다.")
+        settings.sync_hour = body.sync_hour
+    for field in ("auto_draft_on_sync", "auto_sync_enabled"):
+        value = getattr(body, field)
+        if value is not None:
+            setattr(settings, field, 1 if value else 0)
     log(db, actor, "settings_updated", "settings", None, f"기본 생성 설정 변경 (모델: {settings.default_model})")
     db.commit()
     db.refresh(settings)

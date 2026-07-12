@@ -3,6 +3,7 @@
 비용은 저장된 토큰 수 × 조회 시점의 model_prices 단가로 계산한다.
 → 어드민에서 단가를 수정하면 과거 사용분의 표시 금액에도 즉시 반영된다.
 """
+import json
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -10,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from .. import schemas
 from ..database import get_db
-from ..models import LlmUsage, ModelPrice
+from ..models import LlmUsage, ModelPrice, SopVersion
 from ..services.audit import get_actor, log
 from ..services.generator import get_settings
 
@@ -123,6 +124,53 @@ def usage_summary(db: Session = Depends(get_db)):
             }
             for u in rows[:20]
         ],
+    }
+
+
+@router.get("/quality", response_model=schemas.QualityOut)
+def quality_stats(db: Session = Depends(get_db)):
+    """LLM 정확도의 실측 지표 (목표: 무수정 승인율 95%+).
+
+    - 무수정 승인율: 담당자가 손대지 않고 그대로 승인한 초안 비율 = 실전 정확도의 대리 지표
+    - 경고율/실패율: 검증·골든테스트가 문제를 지목한 초안 비율 (프롬프트/모델 튜닝의 근거)
+    """
+    versions = db.query(SopVersion).filter(SopVersion.source == "revision").all()
+    applied = [v for v in versions if v.status == "applied"]
+    rejected = [v for v in versions if v.status == "rejected"]
+    decided = applied + rejected
+    clean = [v for v in applied if not v.was_edited]
+
+    verified = warned = tested = failed = 0
+    for v in versions:
+        try:
+            ver = json.loads(v.verification_json) if v.verification_json else None
+        except ValueError:
+            ver = None
+        if ver and ver.get("checked"):
+            verified += 1
+            if ver.get("warnings"):
+                warned += 1
+        try:
+            rep = json.loads(v.test_report_json) if v.test_report_json else None
+        except ValueError:
+            rep = None
+        if rep and rep.get("ran"):
+            tested += 1
+            if rep.get("failed"):
+                failed += 1
+
+    return {
+        "revision_total": len(versions),
+        "pending": sum(1 for v in versions if v.status == "pending_review"),
+        "applied": len(applied),
+        "rejected": len(rejected),
+        "clean_applied": len(clean),
+        "clean_apply_rate": (len(clean) / len(decided)) if decided else None,
+        "target_rate": 0.95,
+        "verified": verified,
+        "warned": warned,
+        "tested": tested,
+        "test_failed": failed,
     }
 
 

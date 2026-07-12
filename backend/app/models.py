@@ -64,6 +64,10 @@ class ChangeDetection(Base):
     new_hash: Mapped[str] = mapped_column(String(64), default="")
     prev_body: Mapped[str] = mapped_column(Text, default="")
     diff_summary: Mapped[str] = mapped_column(Text, default="")
+    # updated: 기존 아티클 본문 변경 / new_article: 수집 필터를 통과한 신규 아티클 발견
+    kind: Mapped[str] = mapped_column(String(20), default="updated")
+    # 신규 아티클 자동 검수(LLM triage) 결과 JSON — {suitable, inquiry_type_id, action, reason, confident}
+    triage_json: Mapped[str] = mapped_column(Text, default="")
     # open → draft_created → applied / dismissed
     status: Mapped[str] = mapped_column(String(20), default="open")
 
@@ -89,6 +93,8 @@ class AppSettings(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)  # 단일 행(id=1)
     default_model: Mapped[str] = mapped_column(String(100), default="gemini-3.5-flash")
+    # 판정/시뮬레이션 등 가벼운 작업용 모델 (생성·검증은 default_model 사용)
+    light_model: Mapped[str] = mapped_column(String(100), default="gemini-3.5-flash")
     default_generate_template_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("prompt_templates.id"), nullable=True
     )
@@ -97,6 +103,15 @@ class AppSettings(Base):
     )
     usd_krw: Mapped[float] = mapped_column(Float, default=1400.0)  # 원화 환산 환율
     weekly_budget_usd: Mapped[float] = mapped_column(Float, default=10.0)  # 주간(최근 7일) 예산
+    # Zendesk API 자체 안전 상한 (하루 HTTP 요청 수 기준, 도달 시 동기화 중단)
+    zendesk_daily_call_limit: Mapped[int] = mapped_column(Integer, default=100)
+    # 동기화 시 published SOP에 영향 주는 변경 건의 보완 초안을 자동 생성할지
+    auto_draft_on_sync: Mapped[int] = mapped_column(Integer, default=1)  # 0/1 (SQLite bool)
+    # 데일리 자동 동기화 (백엔드 상시 구동 전제, sync_hour시에 1회)
+    auto_sync_enabled: Mapped[int] = mapped_column(Integer, default=0)
+    sync_hour: Mapped[int] = mapped_column(Integer, default=8)  # 로컬 시간 기준 0~23
+    # 마지막 동기화 완료 시각(UTC) — 인크리멘털 동기화의 start_time 기준
+    last_sync_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
 class ModelPrice(Base):
@@ -156,6 +171,33 @@ class ActivityLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class ZendeskDailyUsage(Base):
+    """Zendesk API 일별 HTTP 요청 수 (자체 안전 상한 zendesk_daily_call_limit의 카운터)."""
+
+    __tablename__ = "zendesk_daily_usage"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    date: Mapped[str] = mapped_column(String(10), unique=True)  # YYYY-MM-DD (로컬)
+    calls: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class GoldenQuestion(Base):
+    """SOP별 골든 질문 — 보완 초안 생성 시 자동 회귀 테스트에 사용.
+
+    expected_points: 답변에 반드시 포함돼야 할 핵심 포인트 (줄바꿈 구분)."""
+
+    __tablename__ = "golden_questions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sop_id: Mapped[int] = mapped_column(ForeignKey("ai_sops.id", ondelete="CASCADE"))
+    question: Mapped[str] = mapped_column(Text, default="")
+    expected_points: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(100), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    sop = relationship("AiSop", back_populates="golden_questions")
+
+
 class AiSop(Base):
     __tablename__ = "ai_sops"
 
@@ -163,6 +205,8 @@ class AiSop(Base):
     title: Mapped[str] = mapped_column(String(500))
     target_scope: Mapped[str] = mapped_column(Text, default="")
     content: Mapped[str] = mapped_column(Text, default="")
+    # 영문본 — 내용이 확정/수정될 때마다 자동 번역 (개발팀 전달용)
+    content_en: Mapped[str] = mapped_column(Text, default="")
     created_by: Mapped[str] = mapped_column(String(100), default="")
     inquiry_type_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("inquiry_types.id"), nullable=True
@@ -178,6 +222,9 @@ class AiSop(Base):
     versions = relationship(
         "SopVersion", back_populates="sop", cascade="all, delete-orphan", order_by="SopVersion.version"
     )
+    golden_questions = relationship(
+        "GoldenQuestion", back_populates="sop", cascade="all, delete-orphan", order_by="GoldenQuestion.id"
+    )
 
     @property
     def inquiry_type_name(self) -> str:
@@ -191,7 +238,13 @@ class SopVersion(Base):
     sop_id: Mapped[int] = mapped_column(ForeignKey("ai_sops.id", ondelete="CASCADE"))
     version: Mapped[int] = mapped_column(Integer)
     content: Mapped[str] = mapped_column(Text, default="")
-    # new: 신규 생성 / revision: 변경 감지 보완 초안 / manual: 담당자 직접 수정
+    # 근거 검증 패스 결과 JSON — {checked, warnings: [{quote, reason}], summary}
+    verification_json: Mapped[str] = mapped_column(Text, default="")
+    # 승인 전 담당자가 초안을 수정했는지 (품질 지표 '무수정 승인율'의 근거)
+    was_edited: Mapped[int] = mapped_column(Integer, default=0)
+    # 골든 질문 자동 테스트 결과 JSON — {ran, results: [{question, passed, missing, note}]}
+    test_report_json: Mapped[str] = mapped_column(Text, default="")
+    # new: 신규 생성 / revision: 변경 감지 보완 초안 / manual: 담당자 직접 수정 / import: 기존 완성본 등록
     source: Mapped[str] = mapped_column(String(20), default="new")
     change_detection_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("change_detections.id"), nullable=True

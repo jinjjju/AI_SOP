@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from .. import schemas
 from ..database import get_db
-from ..models import AiSop, Article, ChangeDetection, SopVersion
+from ..models import AiSop, Article, ChangeDetection, GoldenQuestion, SopVersion
 from ..services import generator
 from ..services.audit import get_actor, log, require_manager
 
@@ -56,6 +56,7 @@ def published_sops(db: Session = Depends(get_db)):
             "title": s.title,
             "target_scope": s.target_scope,
             "content": s.content,
+            "content_en": s.content_en,
             "version": s.current_version,
             "updated_at": s.updated_at,
             "source_articles": [
@@ -77,6 +78,51 @@ def generate(body: schemas.GenerateIn, db: Session = Depends(get_db), actor: str
     )
 
 
+@router.post("/import", response_model=schemas.SopDetailOut)
+def import_sop(body: schemas.SopImportIn, db: Session = Depends(get_db), actor: str = Depends(require_manager)):
+    """이미 만들어진 SOP 완성본 등록 (LLM 생성 없이, 영문본만 자동 번역).
+
+    관련 아티클을 연결해야 변경 감지 → 영향 SOP 역추적이 동작한다."""
+    if not body.content.strip():
+        raise HTTPException(400, "SOP 본문을 입력하세요.")
+    if not body.target_scope.strip():
+        raise HTTPException(400, "타겟 문의 스코프를 입력하세요.")
+    if body.status not in ("draft", "confirmed", "published"):
+        raise HTTPException(400, "status는 draft/confirmed/published 중 하나여야 합니다.")
+
+    articles = (
+        db.query(Article).filter(Article.id.in_(body.article_ids)).all() if body.article_ids else []
+    )
+    content = body.content.strip()
+    title = body.title.strip() or next(
+        (l.strip().lstrip("#").strip() for l in content.splitlines() if l.strip().startswith("#")),
+        body.target_scope.strip(),
+    )
+    sop = AiSop(
+        title=title[:200],
+        target_scope=body.target_scope.strip(),
+        content=content,
+        status=body.status,
+        current_version=1,
+        created_by=actor,
+        inquiry_type_id=body.inquiry_type_id,
+        articles=articles,
+    )
+    db.add(sop)
+    db.flush()
+    generator.refresh_translation(db, sop, actor)
+    db.add(
+        SopVersion(
+            sop_id=sop.id, version=1, content=content, source="import", created_by=actor, status="applied"
+        )
+    )
+    log(db, actor, "sop_imported", "sop", sop.id,
+        f"'{sop.title}' 기존 완성본 등록 (아티클 {len(articles)}건 연결 · {body.status})")
+    db.commit()
+    db.refresh(sop)
+    return sop
+
+
 @router.get("/{sop_id}", response_model=schemas.SopDetailOut)
 def get_sop(sop_id: int, db: Session = Depends(get_db)):
     return _get_sop(db, sop_id)
@@ -94,6 +140,7 @@ def update_sop(
     if body.content is not None and body.content != sop.content:
         sop.content = body.content
         sop.current_version = generator.next_version(db, sop.id)
+        generator.refresh_translation(db, sop, actor)  # 내용이 바뀌면 영문본도 갱신
         db.add(
             SopVersion(
                 sop_id=sop.id,
@@ -138,12 +185,64 @@ def regenerate(
 def revise_from_article(
     sop_id: int, body: schemas.ReviseIn, db: Session = Depends(get_db), actor: str = Depends(require_manager)
 ):
-    """수동 링크 검수에서 확정된 아티클로 보완 초안 생성 (변경 감지 없이)."""
+    """수동 링크 검수 또는 신규 아티클 감지 건에서 확정된 아티클로 보완 초안 생성."""
     sop = _get_sop(db, sop_id)
     article = db.get(Article, body.article_id)
     if article is None:
         raise HTTPException(404, "아티클을 찾을 수 없습니다.")
-    return generator.create_manual_revision_draft(db, sop, article, actor)
+    version = generator.create_manual_revision_draft(db, sop, article, actor)
+    if body.change_id:  # 신규 아티클 감지 건에서 넘어온 경우 감지 건과 연결
+        change = db.get(ChangeDetection, body.change_id)
+        if change and change.article_id == article.id:
+            change.status = "draft_created"
+            version.change_detection_id = change.id
+            db.commit()
+            db.refresh(version)
+    return version
+
+
+@router.get("/{sop_id}/golden-questions", response_model=list[schemas.GoldenQuestionOut])
+def list_golden_questions(sop_id: int, db: Session = Depends(get_db)):
+    return _get_sop(db, sop_id).golden_questions
+
+
+@router.post("/{sop_id}/golden-questions", response_model=schemas.GoldenQuestionOut)
+def add_golden_question(
+    sop_id: int, body: schemas.GoldenQuestionIn, db: Session = Depends(get_db), actor: str = Depends(require_manager)
+):
+    """골든 질문 등록 — 보완 초안이 생성될 때마다 자동 회귀 테스트로 실행된다."""
+    sop = _get_sop(db, sop_id)
+    if not body.question.strip():
+        raise HTTPException(400, "질문을 입력하세요.")
+    q = GoldenQuestion(
+        sop_id=sop.id, question=body.question.strip(), expected_points=body.expected_points.strip(), created_by=actor
+    )
+    db.add(q)
+    log(db, actor, "golden_question_added", "sop", sop.id, f"'{sop.title}' 골든 질문 추가: {q.question[:60]}")
+    db.commit()
+    db.refresh(q)
+    return q
+
+
+@router.delete("/{sop_id}/golden-questions/{question_id}")
+def delete_golden_question(
+    sop_id: int, question_id: int, db: Session = Depends(get_db), actor: str = Depends(require_manager)
+):
+    q = db.get(GoldenQuestion, question_id)
+    if q is None or q.sop_id != sop_id:
+        raise HTTPException(404, "골든 질문을 찾을 수 없습니다.")
+    db.delete(q)
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/{sop_id}/golden-test")
+def run_golden_test_now(sop_id: int, db: Session = Depends(get_db), actor: str = Depends(require_manager)):
+    """현재 SOP 본문에 대해 골든 질문 테스트를 수동 실행 (결과는 저장하지 않고 반환)."""
+    sop = _get_sop(db, sop_id)
+    report = generator.run_golden_test(db, sop, sop.content, actor)
+    db.commit()
+    return report
 
 
 @router.post("/{sop_id}/versions/{version}/apply", response_model=schemas.SopDetailOut)
@@ -162,6 +261,7 @@ def apply_version(sop_id: int, version: int, db: Session = Depends(get_db), acto
     v.status = "applied"
     sop.content = v.content
     sop.current_version = v.version
+    generator.refresh_translation(db, sop, actor)  # 승인된 내용으로 영문본 갱신
     if v.change_detection_id:
         change = db.get(ChangeDetection, v.change_detection_id)
         if change:
@@ -209,8 +309,10 @@ def edit_pending_version(
         raise HTTPException(404, "버전을 찾을 수 없습니다.")
     if v.status != "pending_review":
         raise HTTPException(400, "검토 대기 상태의 버전만 수정할 수 있습니다.")
-    if body.content is not None:
+    if body.content is not None and body.content != v.content:
         v.content = body.content
+        v.was_edited = 1  # 무수정 승인율(품질 지표) 계산 근거
+        log(db, actor, "version_edited", "sop", sop_id, f"보완안 v{v.version} 승인 전 수정")
     db.commit()
     db.refresh(v)
     return v

@@ -141,18 +141,28 @@ erDiagram
 
 `prompt_templates.user_prompt_template` 안의 플레이스홀더를 `generator._fill()`이 단순 문자열 치환한다.
 
-프롬프트 용도(purpose)는 3종: **generate**(신규 생성) / **revise**(보완) / **triage**(수동 링크 검수 판단).
+프롬프트 용도(purpose)는 7종: **generate**(신규) / **revise**(보완) / **triage**(수동 검수 판단) /
+**auto_triage**(신규 아티클 자동 분류) / **verify**(근거 검증) / **golden_test**(골든 질문 테스트) / **translate**(영문 번역).
+generate·revise·verify·translate는 `default_model`, triage·auto_triage·golden_test·test는 `light_model`을 쓴다.
 
 | 플레이스홀더 | 주입 값 | 사용 용도 |
 |---|---|---|
 | `{scope}` | 담당자가 입력한 타겟 문의 스코프 | generate / revise |
-| `{articles}` | 참조 아티클 블록 (제목·섹션·Zendesk ID·본문 4,000자 제한, `---` 구분). 변경 감지 revise에서는 끝에 `[변경 diff]` 첨부 | 공통 |
+| `{articles}` | 참조 아티클 블록 (제목·섹션·Zendesk ID·본문 4,000자 제한, `---` 구분). 변경 감지 revise에서는 끝에 `[변경 diff]` 첨부 | generate / revise / triage / auto_triage / verify |
 | `{current_sop}` | 기존 SOP 본문 | revise 전용 |
 | `{inquiry_type}` / `{condition}` | 문의유형명 / 유형 조건 설명 | triage 전용 |
 | `{existing_sops}` | 해당 유형의 기존 SOP 목록 (없으면 `(기존 SOP 없음)`) | triage 전용 |
+| `{inquiry_types}` | 전체 문의유형 목록 (`- [유형 #id] 이름 — 조건 / 기존 SOP: …`) | auto_triage 전용 |
+| `{sop}` | 검증/테스트/번역 대상 SOP 본문 | verify / golden_test / translate |
+| `{questions}` | 골든 질문 블록 (`Qn. 질문` + `[반드시 포함할 포인트]`) | golden_test 전용 |
 
-triage 프롬프트는 반드시 `{"suitable": bool, "reason": str, "action": "revise"|"create"|"none"}` JSON 하나를 출력해야 하며,
-백엔드가 첫 `{`~마지막 `}` 구간을 파싱한다 (파싱 실패 시 suitable=false 처리). mock 분기 마커: `[판단 요청]`.
+JSON 출력 계약 (백엔드가 첫 `{`~마지막 `}` 구간 파싱, 실패 시 보수적 처리):
+- triage: `{"suitable", "reason", "action": "revise"|"create"|"none"}` — light_model 2회 투표, 불일치 시 3회 다수결 (`confident` 반환)
+- auto_triage: `{"suitable", "inquiry_type_id", "action", "reason"}` — 동일 투표 방식, 결과는 감지건 `triage_json`에 저장
+- verify: `{"warnings": [{"quote", "reason"}], "summary"}` — 버전 `verification_json`에 저장
+- golden_test: `{"results": [{"question", "passed", "missing", "note"}]}` — 버전 `test_report_json`에 저장
+
+mock 분기 마커: `[판단 요청]` `[자동 분류 요청]` `[검증 요청]` `[골든 테스트]` `[번역 요청]` (llm.py MockLLMProvider).
 
 ### 아티클 수집 필터 (`backend/article_filters.json`)
 
@@ -185,7 +195,8 @@ Base URL: `http://localhost:8001`. 🔒 = `require_manager` (가입 필요).
 
 | Method | Path | 요청 | 응답 |
 |---|---|---|---|
-| POST | `/api/sync` | | `{synced, created, updated, new_detections}` — Zendesk fetch + 해시 비교 + 감지 생성 |
+| POST | `/api/sync` | query: `mode?` = `auto`(기본, 인크리멘털)/`full`(전체 재수집) | `SyncResult` — `{mode, synced, created, updated, new_detections, new_article_candidates, drafts_created, skipped, budget_exhausted, slack_notified, message}` |
+| GET | `/api/zendesk-usage` | | `{date, calls, limit}` — 오늘 호출 수 / 자체 상한 |
 | GET | `/api/articles` | query: `query?`(키워드 검색, 없으면 전체) | `Article[]` (body 제외) |
 | GET | `/api/articles/{id}` | | `Article` (body 포함) |
 
@@ -217,7 +228,12 @@ Base URL: `http://localhost:8001`. 🔒 = `require_manager` (가입 필요).
 | GET | `/api/sops` | query: `status?` | `SopSummary[]` — `has_pending`, `pending_since`(검토 대기 초안 생성 일시) 포함 |
 | GET | `/api/sops/published` | | **개발팀 전달용** `PublishedSop[]` |
 | POST 🔒 | `/api/sops/generate` | `{scope, article_ids?, inquiry_type_id?}` — `article_ids` 생략 시 자동 검색(+유형 등록 아티클 우선) | `SopDetail` (draft) |
-| POST 🔒 | `/api/sops/{id}/revise` | `{article_id}` — 수동 검수 확정분으로 보완 초안 생성 (변경 감지 없이) | `SopVersion(pending_review)` |
+| POST 🔒 | `/api/sops/import` | `{title?, target_scope, content, inquiry_type_id?, article_ids?, status?}` — 기존 완성본 등록(LLM 생성 없음, 영문본만 자동 번역) | `SopDetail` |
+| POST 🔒 | `/api/sops/{id}/revise` | `{article_id, change_id?}` — 수동 검수/신규 아티클 감지분으로 보완 초안 생성 | `SopVersion(pending_review)` |
+| GET | `/api/sops/{id}/golden-questions` | | `GoldenQuestion[]` |
+| POST 🔒 | `/api/sops/{id}/golden-questions` | `{question, expected_points}` (포인트는 줄바꿈 구분) | `GoldenQuestion` |
+| DELETE 🔒 | `/api/sops/{id}/golden-questions/{qid}` | | `{ok}` |
+| POST 🔒 | `/api/sops/{id}/golden-test` | | `TestReport` — 현재 본문으로 수동 실행 (저장 안 함) |
 | GET | `/api/sops/{id}` | | `SopDetail` — `articles`, `versions` 포함 |
 | PATCH 🔒 | `/api/sops/{id}` | `{title?, content?, target_scope?}` — content 변경 시 manual 새 버전 | `SopDetail` |
 | POST 🔒 | `/api/sops/{id}/status` | `{status}` — 전이 규칙 위반 시 400 | `SopDetail` |
@@ -241,7 +257,7 @@ Base URL: `http://localhost:8001`. 🔒 = `require_manager` (가입 필요).
 | Method | Path | 요청 | 응답 |
 |---|---|---|---|
 | GET | `/api/models` | | `{models: string[], use_mock: bool}` |
-| GET / PUT | `/api/settings` | PUT: `{default_model?, default_generate_template_id?, default_revise_template_id?, usd_krw?, weekly_budget_usd?}` | `Settings` |
+| GET / PUT | `/api/settings` | PUT: `{default_model?, light_model?, default_generate_template_id?, default_revise_template_id?, usd_krw?, weekly_budget_usd?, zendesk_daily_call_limit?, auto_draft_on_sync?, auto_sync_enabled?, sync_hour?}` | `Settings` (+`last_sync_at`) |
 | GET / POST | `/api/prompts` | POST: `{name, purpose, system_prompt, user_prompt_template}` | `PromptTemplate` |
 | PUT | `/api/prompts/{id}` | 위와 동일 | `PromptTemplate` |
 
@@ -253,7 +269,8 @@ Base URL: `http://localhost:8001`. 🔒 = `require_manager` (가입 필요).
     "id": 1,
     "title": "반품 신청 및 배송비 안내",
     "target_scope": "반품 신청 방법, 반품 가능 기간, 반품 배송비 문의",
-    "content": "# AI SOP: ...",          // markdown 전문 — 챗봇 프롬프트 반영 대상
+    "content": "# AI SOP: ...",          // markdown 전문 (한국어) — 챗봇 프롬프트 반영 대상
+    "content_en": "# AI SOP: ...",       // 영문본 — 내용 확정/수정 시 자동 번역 (외국인 개발자용)
     "version": 3,
     "updated_at": "2026-07-09T12:00:00",
     "source_articles": [

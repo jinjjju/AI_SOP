@@ -4,6 +4,8 @@
 모델 목록은 config.AVAILABLE_MODELS (gemini-3.5-flash / gemini-3.5-flash-pro).
 """
 import difflib
+import json
+import re
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -68,7 +70,69 @@ class MockLLMProvider:
             output_tokens=_estimate_tokens(text),
         )
 
+    def _mock_verify(self, user_prompt: str) -> str:
+        """근거 검증 mock: SOP의 금액/기간 수치가 참조 아티클에 없으면 경고로 지목."""
+        sop_part = user_prompt.split("[검증 대상 SOP]")[-1].split("[참조 아티클]")[0]
+        articles_part = user_prompt.split("[참조 아티클]")[-1]
+        warnings = []
+        for token in set(re.findall(r"\d[\d,]*원|\d+일", sop_part)):
+            if token not in articles_part:
+                line = next((l.strip() for l in sop_part.splitlines() if token in l), token)
+                warnings.append({"quote": line[:150], "reason": f"(mock) '{token}' 수치가 참조 아티클에서 확인되지 않습니다."})
+        return json.dumps(
+            {"warnings": warnings,
+             "summary": "(mock) 근거 없는 문장 없음" if not warnings else f"(mock) 근거 불명 {len(warnings)}건 지목"},
+            ensure_ascii=False,
+        )
+
+    def _mock_auto_triage(self, user_prompt: str) -> str:
+        """자동 분류 mock: 아티클 제목에 유형명이 포함된 첫 유형으로 매칭."""
+        title = next((l.strip("# ").strip() for l in user_prompt.splitlines() if l.startswith("### ")), "")
+        for line in user_prompt.splitlines():
+            m = re.match(r"- \[유형 #(\d+)\] (\S+)", line.strip())
+            if m and m.group(2) in title:
+                has_sop = "기존 SOP: 없음" not in line
+                return json.dumps(
+                    {"suitable": True, "inquiry_type_id": int(m.group(1)),
+                     "action": "revise" if has_sop else "create",
+                     "reason": f"(mock) 제목에 '{m.group(2)}' 유형 키워드가 포함되어 조건과 일치합니다."},
+                    ensure_ascii=False,
+                )
+        return json.dumps(
+            {"suitable": False, "inquiry_type_id": None, "action": "none",
+             "reason": "(mock) 어떤 문의유형 조건과도 일치하지 않습니다."},
+            ensure_ascii=False,
+        )
+
+    def _mock_golden_test(self, user_prompt: str) -> str:
+        """골든 테스트 mock: 기대 포인트 문자열이 SOP 본문에 있으면 통과로 판정."""
+        sop_part = user_prompt.split("[SOP]")[-1].split("[골든 질문]")[0]
+        results = []
+        for block in user_prompt.split("[골든 질문]")[-1].split("\n\n"):
+            lines = [l for l in block.strip().splitlines() if l.strip()]
+            if not lines or not re.match(r"Q\d+\.", lines[0]):
+                continue
+            question = re.sub(r"^Q\d+\.\s*", "", lines[0])
+            points = [l.strip() for l in lines[1:] if l.strip() and "[반드시 포함할 포인트]" not in l]
+            missing = [p for p in points if p != "(미지정)" and p not in sop_part]
+            results.append({
+                "question": question,
+                "passed": len(missing) == 0,
+                "missing": missing,
+                "note": "(mock) 포인트 포함 여부 문자열 대조",
+            })
+        return json.dumps({"results": results}, ensure_ascii=False)
+
     def _generate_text(self, model: str, system_prompt: str, user_prompt: str) -> str:
+        if "[검증 요청]" in user_prompt:
+            return self._mock_verify(user_prompt)
+        if "[자동 분류 요청]" in user_prompt:
+            return self._mock_auto_triage(user_prompt)
+        if "[골든 테스트]" in user_prompt:
+            return self._mock_golden_test(user_prompt)
+        if "[번역 요청]" in user_prompt:
+            sop = user_prompt.split("[번역 대상 SOP]")[-1].strip()
+            return f"> (mock English translation — {model})\n\n{sop}"
         if "[판단 요청]" in user_prompt:
             # 수동 링크 검수: 기존 SOP 유무에 따라 보완/신규를 가르는 그럴듯한 판정 JSON
             has_existing = "(기존 SOP 없음)" not in user_prompt
@@ -146,7 +210,10 @@ class GeminiProvider:
         resp = self._client.models.generate_content(
             model=model,
             contents=user_prompt,
-            config=types.GenerateContentConfig(system_instruction=system_prompt or None),
+            # temperature 0: SOP는 창의성보다 재현성·정확성 — 할루시네이션 억제의 기본값
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt or None, temperature=0.0
+            ),
         )
         usage = getattr(resp, "usage_metadata", None)
         return LLMResult(

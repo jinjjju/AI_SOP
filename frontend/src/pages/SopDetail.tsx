@@ -2,7 +2,15 @@ import { useCallback, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { api } from "../api/client";
 import { Md, Spinner, StatusBadge, TextDiff, fmtDate, useToast } from "../components/ui";
-import type { Article, SopDetail as Sop, SopVersion, TestResult } from "../types";
+import type { Article, GoldenQuestion, SopDetail as Sop, SopVersion, TestReport, TestResult, Verification } from "../types";
+
+const parseJson = <T,>(raw: string): T | null => {
+  try {
+    return raw ? (JSON.parse(raw) as T) : null;
+  } catch {
+    return null;
+  }
+};
 
 export default function SopDetail() {
   const { id } = useParams();
@@ -25,6 +33,7 @@ export default function SopDetail() {
       {pending && <PendingReview sop={sop} version={pending} onChanged={load} />}
       <Editor sop={sop} onChanged={load} />
       <References sop={sop} onChanged={load} />
+      <GoldenQuestions sop={sop} onChanged={load} />
       <TestPanel sopId={sop.id} />
       <History versions={sop.versions} current={sop.current_version} />
     </div>
@@ -101,6 +110,9 @@ export default function SopDetail() {
         setBusy(false);
       }
     };
+    const verification = parseJson<Verification>(version.verification_json);
+    const report = parseJson<TestReport>(version.test_report_json);
+
     return (
       <div className="card" style={{ borderColor: "var(--yellow)" }}>
         <div className="row between" style={{ marginBottom: 12 }}>
@@ -118,6 +130,63 @@ export default function SopDetail() {
             </button>
           </div>
         </div>
+
+        {/* 근거 검증 — 지목된 문장만 확인하면 되도록 경고를 최상단에 노출.
+            검증이 안 돌았으면 '통과한 것처럼' 보이지 않게 명시적으로 알린다 */}
+        {(!verification || !verification.checked) && (
+          <div className="card" style={{ borderColor: "var(--yellow)", marginBottom: 12 }}>
+            ⚠ <strong>근거 검증이 실행되지 않은 초안입니다</strong> — 이 건은 전체를 정독해 주세요.
+            {verification?.summary && <span className="sub" style={{ marginLeft: 6 }}>({verification.summary})</span>}
+          </div>
+        )}
+        {verification && verification.checked && (
+          verification.warnings.length > 0 ? (
+            <div className="card" style={{ borderColor: "var(--red)", background: "var(--red-bg)", marginBottom: 12 }}>
+              <strong>⚠ 근거 검증 — 근거 불명 {verification.warnings.length}문장</strong>
+              <p className="sub" style={{ margin: "4px 0 8px" }}>
+                아래 문장은 참조 아티클에서 근거를 찾지 못했습니다. 이 문장만 확인하고 승인하세요.
+              </p>
+              {verification.warnings.map((w, i) => (
+                <div key={i} style={{ fontSize: 13, padding: "6px 0", borderTop: i > 0 ? "1px solid var(--border)" : undefined }}>
+                  <div style={{ fontWeight: 500 }}>"{w.quote}"</div>
+                  <div style={{ color: "var(--text-dim)" }}>{w.reason}</div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="sub" style={{ marginTop: 0 }}>
+              ✅ 근거 검증 통과 — 모든 정책 문장이 참조 아티클에서 확인되었습니다. {verification.summary}
+            </p>
+          )
+        )}
+
+        {/* 골든 질문 자동 회귀 테스트 결과 — 미등록이면 안내만 한 줄 */}
+        {version.source === "revision" && (!report || !report.ran) && (
+          <p className="sub" style={{ marginTop: 0 }}>
+            골든 질문이 없어 자동 회귀 테스트를 건너뛰었습니다. 아래 골든 질문 카드에서 등록하면 다음 초안부터 자동 검사됩니다.
+          </p>
+        )}
+        {report && report.ran && (
+          <div
+            className="card"
+            style={{
+              marginBottom: 12,
+              ...(report.failed ? { borderColor: "var(--yellow)" } : {}),
+            }}
+          >
+            <strong>
+              {report.failed ? "⚠" : "✅"} 골든 질문 테스트 — 통과 {report.passed} / 실패 {report.failed}
+            </strong>
+            {(report.results ?? []).filter((r) => !r.passed).map((r, i) => (
+              <div key={i} style={{ fontSize: 13, padding: "6px 0" }}>
+                <div style={{ fontWeight: 500 }}>Q. {r.question}</div>
+                <div style={{ color: "var(--text-dim)" }}>
+                  빠진 포인트: {r.missing.join(", ") || "—"} {r.note && `· ${r.note}`}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
 
         <div className="tab-row" style={{ marginBottom: 14 }}>
           <button className={`tab ${mode === "diff" ? "active" : ""}`} onClick={() => setMode("diff")}>
@@ -169,6 +238,7 @@ export default function SopDetail() {
 
   function Editor({ sop, onChanged }: { sop: Sop; onChanged: () => void }) {
     const [editing, setEditing] = useState(false);
+    const [lang, setLang] = useState<"ko" | "en">("ko");
     const [content, setContent] = useState(sop.content);
     const [busy, setBusy] = useState(false);
     useEffect(() => setContent(sop.content), [sop.content]);
@@ -177,7 +247,7 @@ export default function SopDetail() {
       setBusy(true);
       try {
         await api.patch(`/api/sops/${sop.id}`, { content });
-        toast("수정 내용이 새 버전으로 저장되었습니다.");
+        toast("수정 내용이 새 버전으로 저장되었고, 영문본도 자동 갱신되었습니다.");
         setEditing(false);
         onChanged();
       } catch (e) {
@@ -190,19 +260,40 @@ export default function SopDetail() {
     return (
       <div className="card">
         <div className="row between" style={{ marginBottom: 10 }}>
-          <h3 style={{ margin: 0 }}>SOP 본문</h3>
-          {editing ? (
-            <div className="row">
-              <button className="btn small" onClick={() => { setEditing(false); setContent(sop.content); }}>취소</button>
-              <button className="btn primary small" disabled={busy || content === sop.content} onClick={save}>
-                {busy ? <Spinner /> : null} 저장
+          <div className="row" style={{ gap: 10 }}>
+            <h3 style={{ margin: 0 }}>SOP 본문</h3>
+            <div className="tab-row">
+              <button className={`tab ${lang === "ko" ? "active" : ""}`} onClick={() => setLang("ko")}>한국어</button>
+              <button
+                className={`tab ${lang === "en" ? "active" : ""}`}
+                onClick={() => setLang("en")}
+                title="내용이 확정/수정될 때마다 자동 번역됩니다 (개발팀 전달용)"
+              >
+                English
               </button>
             </div>
-          ) : (
-            <button className="btn small" onClick={() => setEditing(true)}>✎ 편집</button>
-          )}
+          </div>
+          {lang === "ko" &&
+            (editing ? (
+              <div className="row">
+                <button className="btn small" onClick={() => { setEditing(false); setContent(sop.content); }}>취소</button>
+                <button className="btn primary small" disabled={busy || content === sop.content} onClick={save}>
+                  {busy ? <Spinner /> : null} 저장
+                </button>
+              </div>
+            ) : (
+              <button className="btn small" onClick={() => setEditing(true)}>✎ 편집</button>
+            ))}
         </div>
-        {editing ? (
+        {lang === "en" ? (
+          sop.content_en ? (
+            <Md text={sop.content_en} />
+          ) : (
+            <p className="sub">
+              아직 영문본이 없습니다. 본문을 수정·승인하면 자동 번역됩니다.
+            </p>
+          )
+        ) : editing ? (
           <textarea
             className="textarea mono"
             style={{ minHeight: 460 }}
@@ -212,6 +303,116 @@ export default function SopDetail() {
         ) : (
           <Md text={sop.content} />
         )}
+      </div>
+    );
+  }
+
+  /* 골든 질문 — 보완 초안이 생성될 때마다 자동 회귀 테스트로 실행된다 */
+  function GoldenQuestions({ sop, onChanged }: { sop: Sop; onChanged: () => void }) {
+    const [question, setQuestion] = useState("");
+    const [points, setPoints] = useState("");
+    const [busy, setBusy] = useState(false);
+    const [report, setReport] = useState<TestReport | null>(null);
+
+    const add = async () => {
+      if (!question.trim() || busy) return;
+      setBusy(true);
+      try {
+        await api.post<GoldenQuestion>(`/api/sops/${sop.id}/golden-questions`, {
+          question: question.trim(),
+          // 백엔드는 줄바꿈 구분 — 입력은 쉼표로 받고 변환
+          expected_points: points.split(",").map((p) => p.trim()).filter(Boolean).join("\n"),
+        });
+        setQuestion("");
+        setPoints("");
+        toast("골든 질문이 추가되었습니다. 다음 보완 초안부터 자동 테스트됩니다.");
+        onChanged();
+      } catch (e) {
+        toast((e as Error).message, true);
+      } finally {
+        setBusy(false);
+      }
+    };
+
+    const remove = async (id: number) => {
+      try {
+        await api.del(`/api/sops/${sop.id}/golden-questions/${id}`);
+        onChanged();
+      } catch (e) {
+        toast((e as Error).message, true);
+      }
+    };
+
+    const runNow = async () => {
+      setBusy(true);
+      setReport(null);
+      try {
+        setReport(await api.post<TestReport>(`/api/sops/${sop.id}/golden-test`));
+      } catch (e) {
+        toast((e as Error).message, true);
+      } finally {
+        setBusy(false);
+      }
+    };
+
+    return (
+      <div className="card">
+        <div className="row between" style={{ marginBottom: 8 }}>
+          <h3 style={{ margin: 0 }}>
+            골든 질문 ({sop.golden_questions.length}){" "}
+            <span className="chip">보완 초안마다 자동 회귀 테스트</span>
+          </h3>
+          {sop.golden_questions.length > 0 && (
+            <button className="btn small" disabled={busy} onClick={runNow}>
+              {busy ? <Spinner /> : "▶"} 현재 본문으로 실행
+            </button>
+          )}
+        </div>
+        <p className="sub" style={{ marginTop: 0 }}>
+          이 SOP가 반드시 답할 수 있어야 하는 질문과 핵심 포인트를 등록해두면, 아티클 변경으로 보완 초안이
+          생성될 때마다 자동으로 검사해 다른 답변이 망가지지 않았는지 확인합니다.
+        </p>
+
+        {report && report.ran && (
+          <div className="card" style={{ marginBottom: 10, ...(report.failed ? { borderColor: "var(--yellow)" } : {}) }}>
+            <strong>{report.failed ? "⚠" : "✅"} 통과 {report.passed} / 실패 {report.failed}</strong>
+            {(report.results ?? []).filter((r) => !r.passed).map((r, i) => (
+              <div key={i} style={{ fontSize: 13, padding: "4px 0", color: "var(--text-dim)" }}>
+                Q. {r.question} — 빠진 포인트: {r.missing.join(", ") || "—"}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {sop.golden_questions.map((q) => (
+          <div key={q.id} className="row between" style={{ padding: "7px 4px", fontSize: 13, borderTop: "1px solid var(--border)" }}>
+            <span>
+              <strong>Q.</strong> {q.question}
+              {q.expected_points && (
+                <span style={{ color: "var(--text-faint)", marginLeft: 8 }}>
+                  포인트: {q.expected_points.split("\n").join(" · ")}
+                </span>
+              )}
+            </span>
+            <span style={{ cursor: "pointer", color: "var(--text-faint)" }} title="삭제" onClick={() => remove(q.id)}>✕</span>
+          </div>
+        ))}
+
+        <div className="row" style={{ marginTop: 10, alignItems: "flex-start" }}>
+          <input
+            className="input"
+            placeholder="질문 (예: 단순변심 반품 배송비는 얼마인가요?)"
+            value={question}
+            onChange={(e) => setQuestion(e.target.value)}
+          />
+          <input
+            className="input"
+            placeholder="핵심 포인트 (쉼표 구분, 예: 5,000원, 고객 부담)"
+            value={points}
+            onChange={(e) => setPoints(e.target.value)}
+          />
+          <button className="btn small" disabled={!question.trim() || busy} onClick={add}>＋ 추가</button>
+        </div>
       </div>
     );
   }
@@ -358,7 +559,7 @@ function TestPanel({ sopId }: { sopId: number }) {
 }
 
 function History({ versions, current }: { versions: SopVersion[]; current: number }) {
-  const SOURCE: Record<string, string> = { new: "생성", revision: "보완", manual: "수동 수정" };
+  const SOURCE: Record<string, string> = { new: "생성", revision: "보완", manual: "수동 수정", import: "기존 등록" };
   return (
     <div className="card">
       <h3>버전 이력</h3>
